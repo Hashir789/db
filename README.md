@@ -21,10 +21,13 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - **Dual deed categories**: Hasanaat and Saiyyiaat
 - **Flexible measurement systems**: Scale-based (Yes/No, custom scales) and count-based
 - **Hierarchical structures**: Deeds with optional sub-deeds
-- **Daily logging**: Chronological entries with reflective messages
+- **Entry rules**: If deed has sub-deeds, entries can only be added to sub-deeds; if no sub-deeds, entries added directly to deed
+- **Daily logging**: Chronological entries with daily reflection messages (one Hasanaat message, one Saiyyiaat message per day)
 - **Time-range analytics**: Daily, weekly, monthly, yearly, and custom date ranges
+- **Hide functionality**: Two types - hide from input forms and graphs, or hide from graphs only
+- **Achievements and demerits**: Conditional tracking based on deed/sub-deed patterns
 - **Social features**: Friend/parent-child relationships with permission-based access
-- **Default and custom deeds**: Predefined system deeds and user-created deeds
+- **Optional default deeds**: Users choose to accept default deeds (Namaz, Lie) during onboarding or skip them
 - **High scalability**: Support for millions of users
 
 ---
@@ -32,20 +35,28 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ## Core Workflow
 
 ### User Registration & Onboarding
-1. User registers → Default deeds (Namaz, Lie) are automatically assigned
-2. User completes profile setup
-3. System initializes user's first day entry structure
+1. User registers and completes profile setup
+2. **Default Deed Selection**: User is presented with option to:
+   - **Accept default deeds**: Namaz and Lie are added to their account
+   - **Skip default deeds**: Start with custom deeds only
+3. User can customize default deeds at any time (add/remove/modify)
+4. System initializes user's first day entry structure
 
 ### Daily Deed Logging Workflow
 1. **Entry Creation**: User selects date (default: today)
 2. **Deed Selection**: Choose from Hasanaat or Saiyyiaat section
-3. **Measurement Input**:
+3. **Entry Constraint Check**:
+   - **If deed has sub-deeds**: Only sub-deed entries are allowed (cannot add entry to parent deed)
+   - **If deed has no sub-deeds**: Entry can be added directly to the deed
+4. **Measurement Input**:
    - **Scale-based**: Select from predefined scale (e.g., Yes/No, Excellent/Good/Average)
    - **Count-based**: Enter numeric value
-4. **Sub-deed Handling**: If deed has sub-deeds, system presents sub-deed inputs
-5. **Validation**: Ensure measure type consistency within deed group
-6. **Reflection**: Optional reflective message attachment
-7. **Save**: Entry stored with timestamp and metadata
+5. **Sub-deed Handling**: If deed has sub-deeds, system presents sub-deed inputs for each sub-deed
+6. **Validation**: Ensure measure type consistency within deed group
+7. **Daily Reflection Messages**: User can optionally add:
+   - One Hasanaat reflection message (for all hasanaat deeds of the day)
+   - One Saiyyiaat reflection message (for all saiyyiaat deeds of the day)
+8. **Save**: Entry stored with timestamp and metadata
 
 ### Custom Deed Creation Workflow
 1. User navigates to "Custom Deeds"
@@ -116,9 +127,22 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Audit trail for entry modifications
 - Tracks who made changes (owner or friend)
 
-#### 10. **User_Default_Deeds**
+#### 10. **Daily_Reflection_Messages**
+- Stores optional daily reflection messages
+- One Hasanaat message and one Saiyyiaat message per user per day
+
+#### 11. **Achievements**
+- Defines achievement conditions and rules
+- Tracks user achievements based on deed/sub-deed patterns
+
+#### 12. **Demerits**
+- Defines demerit conditions and rules
+- Tracks user demerits based on deed/sub-deed patterns
+
+#### 13. **User_Default_Deeds**
 - Junction table linking users to default deeds
-- Ensures all users have access to default deeds on registration
+- Tracks which default deeds user opted-in during onboarding
+- Users can add/remove default deeds at any time
 
 ---
 
@@ -150,6 +174,10 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - measure_type (ENUM: 'scale_based', 'count_based', Not Null)
 - is_default (BOOLEAN, Default: false, Indexed)
 - is_active (BOOLEAN, Default: true)
+- hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
+  -- 'hide_from_all': Hidden from input forms and graphs
+  -- 'hide_from_graphs': Visible in input forms but hidden in graphs only
+  -- 'none': Visible everywhere
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
 ```
@@ -163,6 +191,10 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - name (VARCHAR, Not Null)
 - display_order (INTEGER, Default: 0)
 - is_active (BOOLEAN, Default: true)
+- hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
+  -- 'hide_from_all': Hidden from input forms and graphs (e.g., Ramadan Fasts when not in Ramadan)
+  -- 'hide_from_graphs': Visible in input forms but hidden in graphs only
+  -- 'none': Visible everywhere
 - created_at (TIMESTAMP)
 ```
 
@@ -188,7 +220,6 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - entry_date (DATE, Not Null, Indexed)
 - measure_value (VARCHAR, Nullable)  -- For scale-based: stores scale_value
 - count_value (INTEGER, Nullable)  -- For count-based: stores numeric count
-- reflection_message (TEXT, Nullable)
 - created_by_user_id (UUID, Foreign Key → users.user_id)  -- Tracks who created (owner or friend)
 - created_at (TIMESTAMP, Indexed)
 - updated_at (TIMESTAMP)
@@ -199,6 +230,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - For scale-based deeds: `measure_value` must be NOT NULL, `count_value` must be NULL
 - For count-based deeds: `count_value` must be NOT NULL, `measure_value` must be NULL
 - One entry per user per deed per date (unique constraint on `user_id, deed_id, entry_date`)
+- **Entry Rule**: If deed has sub-deeds, entries can ONLY be created for sub-deeds (via sub_entry_values), NOT for the parent deed. If deed has no sub-deeds, entries can be created directly for the deed.
 
 #### **sub_entry_values**
 ```sql
@@ -240,6 +272,79 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - created_at (TIMESTAMP, Indexed)
 ```
 
+#### **daily_reflection_messages**
+```sql
+- reflection_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
+- reflection_date (DATE, Not Null, Indexed)
+- hasanaat_message (TEXT, Nullable)  -- One optional message for all hasanaat deeds of the day
+- saiyyiaat_message (TEXT, Nullable)  -- One optional message for all saiyyiaat deeds of the day
+- created_at (TIMESTAMP)
+- updated_at (TIMESTAMP)
+```
+
+**Constraints**:
+- Unique constraint on `(user_id, reflection_date)` - one set of messages per user per day
+- At least one of `hasanaat_message` or `saiyyiaat_message` should be provided (enforced at application level)
+
+#### **achievements**
+```sql
+- achievement_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Nullable)
+  -- NULL for system-wide achievements, user_id for custom achievements
+- name (VARCHAR, Not Null)
+- description (TEXT, Nullable)
+- condition_type (ENUM: 'all_sub_deeds', 'specific_sub_deeds', 'custom', Not Null)
+- condition_config (JSONB, Not Null)
+  -- Stores condition rules (e.g., {"deed_id": "...", "sub_deed_ids": [...], "scale_value": "prayed_in_mosque"})
+- is_active (BOOLEAN, Default: true)
+- created_at (TIMESTAMP)
+- updated_at (TIMESTAMP)
+```
+
+**Usage**: Defines achievement conditions. Example: "All prayers in mosque" = condition_type='all_sub_deeds', condition_config={"deed_id": "namaz_deed_id", "scale_value": "prayed_in_mosque"}
+
+#### **user_achievements**
+```sql
+- user_achievement_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
+- achievement_id (UUID, Foreign Key → achievements.achievement_id, ON DELETE CASCADE)
+- achieved_date (DATE, Not Null, Indexed)
+- created_at (TIMESTAMP)
+```
+
+**Constraints**:
+- Unique constraint on `(user_id, achievement_id, achieved_date)` - one achievement per user per achievement per day
+
+#### **demerits**
+```sql
+- demerit_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Nullable)
+  -- NULL for system-wide demerits, user_id for custom demerits
+- name (VARCHAR, Not Null)
+- description (TEXT, Nullable)
+- condition_type (ENUM: 'all_sub_deeds', 'specific_sub_deeds', 'custom', Not Null)
+- condition_config (JSONB, Not Null)
+  -- Stores condition rules (e.g., {"deed_id": "...", "sub_deed_ids": [...], "scale_values": ["late_prayed", "not_prayed"]})
+- is_active (BOOLEAN, Default: true)
+- created_at (TIMESTAMP)
+- updated_at (TIMESTAMP)
+```
+
+**Usage**: Defines demerit conditions. Example: "All prayers late/not prayed" = condition_type='all_sub_deeds', condition_config={"deed_id": "namaz_deed_id", "scale_values": ["late_prayed", "not_prayed"]}
+
+#### **user_demerits**
+```sql
+- user_demerit_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
+- demerit_id (UUID, Foreign Key → demerits.demerit_id, ON DELETE CASCADE)
+- demerit_date (DATE, Not Null, Indexed)
+- created_at (TIMESTAMP)
+```
+
+**Constraints**:
+- Unique constraint on `(user_id, demerit_id, demerit_date)` - one demerit per user per demerit per day
+
 #### **user_default_deeds**
 ```sql
 - user_default_deed_id (UUID, Primary Key)
@@ -249,7 +354,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - assigned_at (TIMESTAMP, Default: CURRENT_TIMESTAMP)
 ```
 
-**Purpose**: Tracks which default deeds are assigned to which users. Useful for analytics and potential future customization of default deeds per user.
+**Purpose**: Tracks which default deeds user opted-in during onboarding. Users can add/remove default deeds at any time. Useful for analytics and customization per user.
 
 ### Relationships Summary
 
@@ -259,6 +364,11 @@ users (1) ────< (M) entries
 users (1) ────< (M) user_default_deeds
 users (1) ────< (M) friend_relationships (as requester)
 users (1) ────< (M) friend_relationships (as receiver)
+users (1) ────< (M) daily_reflection_messages
+users (1) ────< (M) achievements (custom achievements)
+users (1) ────< (M) demerits (custom demerits)
+users (1) ────< (M) user_achievements
+users (1) ────< (M) user_demerits
 
 deeds (1) ────< (M) sub_deeds
 deeds (1) ────< (M) scale_definitions
@@ -269,6 +379,9 @@ entries (1) ────< (M) sub_entry_values
 entries (1) ────< (M) activity_logs
 
 sub_deeds (1) ────< (M) sub_entry_values
+
+achievements (1) ────< (M) user_achievements
+demerits (1) ────< (M) user_demerits
 ```
 
 ---
@@ -278,31 +391,49 @@ sub_deeds (1) ────< (M) sub_entry_values
 ### 1. User Registration Flow
 ```
 1. User submits registration → Create user record
-2. System queries default deeds (WHERE is_default = true)
-3. For each default deed:
-   - Create user_default_deeds record
-   - If deed has sub-deeds, sub-deeds automatically available
+2. User completes profile setup
+3. **Onboarding - Default Deed Selection**:
+   - System presents option to accept default deeds (Namaz, Lie)
+   - If user accepts:
+     * Query default deeds (WHERE is_default = true AND name IN ('Namaz', 'Lie'))
+     * For each selected default deed:
+       - Create user_default_deeds record with is_active = true
+       - If deed has sub-deeds, sub-deeds automatically available
+   - If user skips:
+     * No default deeds added (user can add them later)
+4. User can customize default deeds at any time (add/remove via user_default_deeds)
 ```
 
 ### 2. Daily Entry Creation Flow
 ```
 1. User selects date and deed
 2. System validates:
-   - Deed exists and is accessible to user (default or owned)
+   - Deed exists and is accessible to user (default via user_default_deeds or owned)
+   - Deed is not hidden from input (hide_type != 'hide_from_all')
    - Entry doesn't already exist for date+deed (unless updating)
-3. If scale-based:
-   - User selects from scale_definitions for that deed
-   - Store value in entries.measure_value
-4. If count-based:
+3. **Entry Constraint Validation**:
+   - Check if deed has sub-deeds:
+     * If YES: Only allow entry creation for sub-deeds (via sub_entry_values)
+     * If NO: Allow entry creation directly for the deed
+4. If scale-based:
+   - User selects from scale_definitions for that deed/sub-deed
+   - Store value in entries.measure_value or sub_entry_values.measure_value
+5. If count-based:
    - User enters numeric value
-   - Store value in entries.count_value
-5. If deed has sub-deeds:
-   - User provides values for each sub-deed
-   - Create sub_entry_values records
+   - Store value in entries.count_value or sub_entry_values.count_value
+6. If deed has sub-deeds:
+   - User provides values for each sub-deed (not for parent deed)
+   - Create sub_entry_values records linked to entry
    - Validate measure_type consistency
-6. Optional reflection message stored
-7. Create entry record
-8. Create activity_log record (action: 'created')
+7. Create entry record (or update existing)
+8. **Daily Reflection Messages** (optional):
+   - User can add/update daily_reflection_messages for the date
+   - One hasanaat_message and/or one saiyyiaat_message per day
+9. Create activity_log record (action: 'created' or 'updated')
+10. **Achievement/Demerit Check** (background process):
+    - Evaluate achievement conditions based on entries of the day
+    - Evaluate demerit conditions based on entries of the day
+    - Create user_achievements or user_demerits records if conditions met
 ```
 
 ### 3. Custom Deed Creation Flow
@@ -324,17 +455,51 @@ sub_deeds (1) ────< (M) sub_entry_values
 2. System constructs query:
    - Filter entries by user_id, entry_date range
    - Join with deeds for category filtering
+   - **Filter out hidden items**:
+     * Exclude deeds/sub-deeds where hide_type = 'hide_from_all' (from all views)
+     * Exclude deeds/sub-deeds where hide_type = 'hide_from_graphs' (from graphs only)
    - Aggregate by deed_id, sub_deed_id
 3. Calculate metrics:
-   - Total entries per deed
+   - Total entries per deed (respecting hide_type rules)
    - Average/trend for scale-based (using numeric_value from scale_definitions)
    - Sum/total for count-based
    - Hasanaat vs Saiyyiaat balance
    - Trend analysis (improvement/decline)
+   - Include user_achievements and user_demerits for the time range
 4. Return aggregated data for visualization
 ```
 
-### 5. Friend Access Flow
+### 5. Achievement/Demerit Evaluation Flow
+```
+1. Trigger: After daily entry creation/update or scheduled daily check
+2. For each active achievement/demerit (user-specific or system-wide):
+   - Read condition_config JSONB
+   - Query relevant entries for the date
+   - Evaluate condition:
+     * 'all_sub_deeds': Check if all sub-deeds of deed meet condition
+     * 'specific_sub_deeds': Check if specified sub-deeds meet condition
+     * 'custom': Execute custom logic (application-level)
+3. If condition met:
+   - Create user_achievements or user_demerits record
+   - Notify user (optional)
+4. Example evaluations:
+   - "All prayers in mosque": Check if all Namaz sub-deeds have scale_value = 'prayed_in_mosque'
+   - "All prayers except Fajr in mosque": Check if Zuhr, Asr, Maghrib, Isha have scale_value = 'prayed_in_mosque'
+   - "All prayers late/not prayed": Check if all Namaz sub-deeds have scale_value IN ('late_prayed', 'not_prayed')
+```
+
+### 6. Daily Reflection Messages Flow
+```
+1. User navigates to daily entry view for a date
+2. System checks for existing daily_reflection_messages for that date
+3. User can:
+   - Add hasanaat_message (for all hasanaat deeds of the day)
+   - Add saiyyiaat_message (for all saiyyiaat deeds of the day)
+   - Update existing messages
+4. Save to daily_reflection_messages table (one record per user per day)
+```
+
+### 7. Friend Access Flow
 ```
 1. Friend navigates to friend's entries
 2. System checks friend_relationships:
@@ -398,8 +563,8 @@ sub_deeds (1) ────< (M) sub_entry_values
 
 ### 6. **Default Deeds Management**
 - **Strategy**: System-level deeds with `user_id = NULL` and `is_default = true`
-- **Assignment**: Automatic on user registration via `user_default_deeds` junction table
-- **Customization**: Users cannot delete default deeds, but can disable via `user_default_deeds.is_active`
+- **Assignment**: Optional during onboarding via `user_default_deeds` junction table (user chooses to accept or skip)
+- **Customization**: Users can add/remove default deeds at any time via `user_default_deeds` table
 - **Updates**: System-level updates to default deeds can propagate or remain versioned
 
 ### 7. **Measure Type Consistency**
@@ -408,12 +573,45 @@ sub_deeds (1) ────< (M) sub_entry_values
   - Application logic: Validate before insert/update
   - Sub-deeds: Inherit from parent deed (no separate measure_type column)
 
-### 8. **Reflection Messages**
-- **Storage**: TEXT field (unlimited length, but enforce max in application)
+### 8. **Entry Constraint for Sub-Deeds**
+- **Rule**: If a deed has sub-deeds, entries can ONLY be created for sub-deeds (via sub_entry_values), NOT for the parent deed
+- **Enforcement**:
+  - Application logic: Check if deed has sub-deeds before allowing entry creation
+  - Database trigger: Prevent entry creation for deeds with sub-deeds (enforce at database level as backup)
+  - Example: Namaz has sub-deeds (Fajr, Zuhr, etc.) → entries only for sub-deeds, not Namaz directly
+  - Example: Lie has no sub-deeds → entries can be created directly for Lie
+
+### 9. **Hide Type Management**
+- **Two Types**:
+  - `hide_from_all`: Hidden from both input forms AND graphs (e.g., Ramadan Fasts when not in Ramadan)
+  - `hide_from_graphs`: Visible in input forms but hidden in graphs only
+- **Enforcement**:
+  - Application logic: Filter deeds/sub-deeds based on hide_type when displaying input forms and graphs
+  - Analytics queries: Exclude items with hide_type = 'hide_from_all' or 'hide_from_graphs' based on context
+  - Dynamic updates: hide_type can be updated based on conditions (e.g., date-based logic for Ramadan Fasts)
+
+### 10. **Daily Reflection Messages**
+- **Storage**: Two TEXT fields in `daily_reflection_messages` table (hasanaat_message, saiyyiaat_message)
+- **Constraint**: One record per user per day (unique constraint on user_id, reflection_date)
+- **Usage**: One optional message for all hasanaat deeds of the day, one optional message for all saiyyiaat deeds of the day
 - **Indexing**: Consider full-text search index if search functionality needed
 - **Encoding**: UTF-8 to support multilingual content
 
-### 9. **Friend Permissions**
+### 11. **Achievements and Demerits**
+- **Storage**: JSONB field (condition_config) for flexible condition rules
+- **Types**:
+  - System-wide: user_id = NULL (available to all users)
+  - Custom: user_id set (user-specific achievements/demerits)
+- **Evaluation**:
+  - Triggered after entry creation/update or scheduled daily check
+  - Application-level logic evaluates condition_config JSONB
+  - Creates user_achievements or user_demerits records when conditions met
+- **Examples**:
+  - All prayers in mosque (all_sub_deeds condition)
+  - All prayers except Fajr in mosque (specific_sub_deeds condition)
+  - All prayers late/not prayed (all_sub_deeds with multiple scale_values)
+
+### 12. **Friend Permissions**
 - **Granularity**: Three levels (read_only, write_only, read_write)
 - **Enforcement**: Application-level authorization checks
 - **Audit**: Track all friend actions via activity_logs
@@ -457,6 +655,26 @@ CREATE INDEX idx_activity_logs_user_date ON activity_logs(user_id, created_at DE
 
 -- Scale definitions (for validation)
 CREATE INDEX idx_scale_definitions_deed ON scale_definitions(deed_id, is_active);
+
+-- Daily reflection messages
+CREATE INDEX idx_daily_reflection_user_date ON daily_reflection_messages(user_id, reflection_date DESC);
+CREATE INDEX idx_daily_reflection_date ON daily_reflection_messages(reflection_date);
+
+-- Achievements and demerits
+CREATE INDEX idx_achievements_user ON achievements(user_id, is_active) WHERE user_id IS NOT NULL;
+CREATE INDEX idx_achievements_system ON achievements(is_active) WHERE user_id IS NULL;
+CREATE INDEX idx_demerits_user ON demerits(user_id, is_active) WHERE user_id IS NOT NULL;
+CREATE INDEX idx_demerits_system ON demerits(is_active) WHERE user_id IS NULL;
+
+-- User achievements and demerits
+CREATE INDEX idx_user_achievements_user_date ON user_achievements(user_id, achieved_date DESC);
+CREATE INDEX idx_user_achievements_achievement ON user_achievements(achievement_id, achieved_date DESC);
+CREATE INDEX idx_user_demerits_user_date ON user_demerits(user_id, demerit_date DESC);
+CREATE INDEX idx_user_demerits_demerit ON user_demerits(demerit_id, demerit_date DESC);
+
+-- Hide type filtering (for analytics)
+CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
+CREATE INDEX idx_sub_deeds_hide_type ON sub_deeds(hide_type, is_active);
 ```
 
 #### **Composite Indexes for Analytics**
@@ -697,14 +915,36 @@ CREATE POLICY user_entries_policy ON entries
 
 This database architecture plan provides a robust, scalable foundation for Kitaab that:
 
-✅ **Supports core functionality**: Daily logging, custom deeds, analytics, social features  
-✅ **Ensures data integrity**: Constraints, relationships, validation rules  
-✅ **Optimizes performance**: Strategic indexing, caching, partitioning  
-✅ **Maintains security**: Encryption, access control, audit trails  
-✅ **Scales horizontally**: Read replicas, sharding considerations, connection pooling  
-✅ **Enables maintainability**: Clear schema, migration strategy, monitoring  
+✅ **Supports core functionality**: 
+   - Daily logging with entry rules (sub-deed constraints)
+   - Optional default deeds onboarding (user choice)
+   - Daily reflection messages (one Hasanaat, one Saiyyiaat per day)
+   - Custom deeds with flexible measurement systems
+   - Analytics with hide type filtering
+   - Achievements and demerits with conditional evaluation
+   - Social features with permission-based access
 
-The design balances flexibility (custom deeds, scales) with structure (default deeds, measure types) while maintaining performance and security standards required for a platform serving millions of users.
+✅ **Ensures data integrity**: 
+   - Constraints, relationships, validation rules
+   - Entry constraint validation (deeds with sub-deeds vs. without)
+   - Hide type management for conditional visibility
+   - Unique constraints for daily reflection messages
+
+✅ **Optimizes performance**: 
+   - Strategic indexing (including new tables: achievements, demerits, reflection messages)
+   - Caching, partitioning
+   - Hide type indexes for efficient filtering
+
+✅ **Maintains security**: 
+   - Encryption, access control, audit trails
+
+✅ **Scales horizontally**: 
+   - Read replicas, sharding considerations, connection pooling
+
+✅ **Enables maintainability**: 
+   - Clear schema, migration strategy, monitoring
+
+The design balances flexibility (custom deeds, scales, achievements/demerits) with structure (optional default deeds, entry rules, hide types) while maintaining performance and security standards required for a platform serving millions of users.
 
 ---
 
