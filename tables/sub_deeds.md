@@ -288,3 +288,4 @@ INSERT INTO sub_deeds (
 3. **Cascade Delete**: Deleting a deed automatically deletes all its sub-deeds
 4. **Hide Type Updates**: Application should update `hide_type` based on context (e.g., date checks for Ramadan)
 
+

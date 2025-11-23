@@ -282,3 +282,4 @@ INSERT INTO entries (
 4. **Unique Entry**: One entry per user per deed per date (enforced by unique constraint)
 5. **Friend Access**: Friends can create/update entries based on permission_type in friend_relationships
 
+

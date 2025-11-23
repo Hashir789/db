@@ -243,3 +243,4 @@ WHERE relationship_id = 'bb0e8400-e29b-41d4-a716-446655440001';
 4. **Status Management**: Only `accepted` relationships allow entry access
 5. **Cascade Delete**: Deleting a user deletes all their relationships
 
+

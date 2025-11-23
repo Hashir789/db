@@ -228,3 +228,4 @@ WHERE ua.achieved_date >= CURRENT_DATE - INTERVAL '7 days'
 ORDER BY ua.achieved_date DESC, ua.created_at DESC;
 ```
 
+

@@ -306,3 +306,4 @@ INSERT INTO deeds (
 3. **Sub-deed Inheritance**: Sub-deeds inherit `measure_type` from parent deed
 4. **Entry Constraint**: If deed has sub-deeds, entries must be for sub-deeds only
 
+

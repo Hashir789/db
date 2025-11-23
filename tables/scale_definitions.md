@@ -374,3 +374,4 @@ INSERT INTO scale_definitions (
 3. **Cascade Delete**: Deleting a deed automatically deletes all its scale definitions
 4. **Numeric Value**: Should be set for meaningful trend analysis and aggregations
 
+

@@ -239,3 +239,4 @@ GROUP BY DATE_TRUNC('month', demerit_date)
 ORDER BY month DESC;
 ```
 
+
