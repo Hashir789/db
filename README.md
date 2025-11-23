@@ -20,14 +20,14 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 
 - **Dual deed categories**: Hasanaat and Saiyyiaat
 - **Flexible measurement systems**: Scale-based (Yes/No, custom scales) and count-based
-- **Hierarchical structures**: Deeds with optional sub-deeds
-- **Entry rules**: If deed has sub-deeds, entries can only be added to sub-deeds; if no sub-deeds, entries added directly to deed
+- **Hierarchical structures**: Self-referencing deeds with unlimited nesting (parent_deed_id)
+- **Entry rules**: Entries are created directly for the deed being tracked (parent or child)
 - **Daily logging**: Chronological entries with daily reflection messages (one Hasanaat message, one Saiyyiaat message per day)
 - **Time-range analytics**: Daily, weekly, monthly, yearly, and custom date ranges
 - **Hide functionality**: Two types - hide from input forms and graphs, or hide from graphs only
 - **Achievements and demerits**: Conditional tracking based on deed/sub-deed patterns
-- **Social features**: Friend/parent-child relationships with permission-based access
-- **Optional default deeds**: Users choose to accept default deeds (Namaz, Lie) during onboarding or skip them
+- **Social features**: Mutual friendship and one-way following with deed-level permissions (multiple read, one write per deed)
+- **Optional default deeds**: Users choose to accept default deeds (Namaz, Lie) during onboarding or skip them. All deeds have user_id (defaults owned by SYSTEM_USER_ID)
 - **High scalability**: Support for millions of users
 
 ---
@@ -44,19 +44,16 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 
 ### Daily Deed Logging Workflow
 1. **Entry Creation**: User selects date (default: today)
-2. **Deed Selection**: Choose from Hasanaat or Saiyyiaat section
-3. **Entry Constraint Check**:
-   - **If deed has sub-deeds**: Only sub-deed entries are allowed (cannot add entry to parent deed)
-   - **If deed has no sub-deeds**: Entry can be added directly to the deed
-4. **Measurement Input**:
+2. **Deed Selection**: Choose from Hasanaat or Saiyyiaat section (can select parent or child deed)
+3. **Measurement Input**:
    - **Scale-based**: Select from predefined scale (e.g., Yes/No, Excellent/Good/Average)
    - **Count-based**: Enter numeric value
-5. **Sub-deed Handling**: If deed has sub-deeds, system presents sub-deed inputs for each sub-deed
-6. **Validation**: Ensure measure type consistency within deed group
-7. **Daily Reflection Messages**: User can optionally add:
+4. **Validation**: Ensure measure type consistency (child deeds inherit from parent)
+5. **Daily Reflection Messages**: User can optionally add:
    - One Hasanaat reflection message (for all hasanaat deeds of the day)
    - One Saiyyiaat reflection message (for all saiyyiaat deeds of the day)
-8. **Save**: Entry stored with timestamp and metadata
+6. **Save**: Entry stored with timestamp and metadata
+7. **Friend/Follower Edits**: If edited by friend/follower, `edited_by_user_id` is set; owner can revert within 30 days
 
 ### Custom Deed Creation Workflow
 1. User navigates to "Custom Deeds"
@@ -77,10 +74,14 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 6. Computes balance between Hasanaat and Saiyyiaat
 
 ### Social Features Workflow
-1. **Friend Request**: User A sends friend request to User B
-2. **Permission Assignment**: User B accepts and assigns permissions (read/write/both)
-3. **Access**: User A can view/edit User B's entries based on permissions
-4. **Activity Logging**: System tracks who made changes (owner vs. friend)
+1. **Friend/Follow Request**: User A sends friend request or follows User B
+2. **Request Handling**: User B can accept, reject, or block (approval optional for follow model)
+3. **Deed-Level Permissions**: User B assigns permissions per deed:
+   - **Read**: Multiple friends/followers can have read access
+   - **Write**: Only one friend/follower can have write access per deed
+4. **Entry Access**: Friend/follower can view/edit entries based on permissions
+5. **Edit Tracking**: Friend/follower edits create new entry rows with `edited_by_user_id` set
+6. **Revert Window**: Owner can revert friend/follower changes within 30 days
 
 ---
 
@@ -93,53 +94,45 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Stores authentication and profile information
 
 #### 2. **Deeds**
-- Represents both default system deeds and user-created custom deeds
+- Represents both default system deeds (owned by SYSTEM_USER_ID) and user-created custom deeds
+- Self-referencing structure: `parent_deed_id` allows unlimited nesting
 - Categorized as Hasanaat or Saiyyiaat
 - Contains measure type and scale definitions
+- All deeds have `user_id NOT NULL` (uniform ownership model)
 
-#### 3. **Sub_Deeds**
-- Optional child entities of Deeds
-- Inherits measure type from parent deed
-- Example: Fajr, Zuhr, Asr under Namaz
-
-#### 4. **Entries**
-- Daily logging records for deeds
+#### 3. **Entries**
+- Daily logging records for deeds (parent or child)
 - Links user, deed, and date
-- Stores measurement values and reflection messages
+- Stores measurement values
+- Tracks friend/follower edits via `edited_by_user_id`
+- Full history maintained in entries table (no separate activity_logs)
 
-#### 5. **Sub_Entry_Values**
-- Stores values for sub-deeds within an entry
-- Links to parent entry and specific sub-deed
-
-#### 6. **Scale_Definitions**
+#### 4. **Scale_Definitions**
 - Defines custom scales for scale-based deeds
 - Example: Excellent, Good, Average, Poor
 
-#### 7. **Friend_Relationships**
-- Manages parent-child/friend connections
-- Stores permission levels (read/write/both)
+#### 5. **Friend_Relationships**
+- Manages mutual friendship and one-way following
+- Tracks relationship type (friend/follow) and status (pending/accepted/rejected/blocked)
 
-#### 8. **Friend_Requests**
-- Pending friend connection requests
-- Tracks sender, receiver, and status
+#### 6. **Friend_Deed_Permissions**
+- Deed-level permissions for friends/followers
+- Multiple friends/followers can have read access per deed
+- Only one friend/follower can have write access per deed
 
-#### 9. **Activity_Logs**
-- Audit trail for entry modifications
-- Tracks who made changes (owner or friend)
-
-#### 10. **Daily_Reflection_Messages**
+#### 7. **Daily_Reflection_Messages**
 - Stores optional daily reflection messages
 - One Hasanaat message and one Saiyyiaat message per user per day
 
-#### 11. **Achievements**
+#### 8. **Achievements**
 - Defines achievement conditions and rules
 - Tracks user achievements based on deed/sub-deed patterns
 
-#### 12. **Demerits**
+#### 9. **Demerits**
 - Defines demerit conditions and rules
 - Tracks user demerits based on deed/sub-deed patterns
 
-#### 13. **User_Default_Deeds**
+#### 10. **User_Default_Deeds**
 - Junction table linking users to default deeds
 - Tracks which default deeds user opted-in during onboarding
 - Users can add/remove default deeds at any time
@@ -167,7 +160,11 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 #### **deeds**
 ```sql
 - deed_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, Nullable for default deeds)
+- user_id (UUID, Foreign Key → users.user_id, Not Null)
+  -- SYSTEM_USER_ID for default deeds, user_id for custom deeds
+- parent_deed_id (UUID, Foreign Key → deeds.deed_id, Nullable)
+  -- NULL for main deeds, set for child deeds (sub-deeds)
+  -- Enables unlimited nesting
 - name (VARCHAR, Not Null)
 - description (TEXT, Nullable)
 - category (ENUM: 'hasanaat', 'saiyyiaat', Not Null, Indexed)
@@ -178,27 +175,18 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
   -- 'hide_from_all': Hidden from input forms and graphs
   -- 'hide_from_graphs': Visible in input forms but hidden in graphs only
   -- 'none': Visible everywhere
+- display_order (INTEGER, Default: 0)
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
 ```
 
-**Note**: If `user_id` is NULL and `is_default` is TRUE, the deed is a system default deed available to all users.
+**Notes**: 
+- All deeds have `user_id NOT NULL` (uniform ownership model)
+- Default deeds are owned by `SYSTEM_USER_ID`
+- Self-referencing structure: `parent_deed_id` allows unlimited nesting
+- Child deeds inherit `measure_type` from parent deed
+- No separate `sub_deeds` table needed
 
-#### **sub_deeds**
-```sql
-- sub_deed_id (UUID, Primary Key)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE)
-- name (VARCHAR, Not Null)
-- display_order (INTEGER, Default: 0)
-- is_active (BOOLEAN, Default: true)
-- hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
-  -- 'hide_from_all': Hidden from input forms and graphs (e.g., Ramadan Fasts when not in Ramadan)
-  -- 'hide_from_graphs': Visible in input forms but hidden in graphs only
-  -- 'none': Visible everywhere
-- created_at (TIMESTAMP)
-```
-
-**Constraint**: Sub-deeds inherit measure_type from parent deed.
 
 #### **scale_definitions**
 ```sql
@@ -216,41 +204,36 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```sql
 - entry_id (UUID, Primary Key)
 - user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
+  -- Owner of the entry (deed owner)
 - deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+  -- Can be parent or child deed
 - entry_date (DATE, Not Null, Indexed)
 - measure_value (VARCHAR, Nullable)  -- For scale-based: stores scale_value
 - count_value (INTEGER, Nullable)  -- For count-based: stores numeric count
-- created_by_user_id (UUID, Foreign Key → users.user_id)  -- Tracks who created (owner or friend)
+- edited_by_user_id (UUID, Foreign Key → users.user_id, Nullable)
+  -- NULL for owner's entry, set when friend/follower edits
+  -- Creates new entry row when friend/follower edits (old value remains)
 - created_at (TIMESTAMP, Indexed)
 - updated_at (TIMESTAMP)
-- updated_by_user_id (UUID, Foreign Key → users.user_id, Nullable)
 ```
 
 **Constraints**:
 - For scale-based deeds: `measure_value` must be NOT NULL, `count_value` must be NULL
 - For count-based deeds: `count_value` must be NOT NULL, `measure_value` must be NULL
-- One entry per user per deed per date (unique constraint on `user_id, deed_id, entry_date`)
-- **Entry Rule**: If deed has sub-deeds, entries can ONLY be created for sub-deeds (via sub_entry_values), NOT for the parent deed. If deed has no sub-deeds, entries can be created directly for the deed.
+- One entry per user per deed per date per editor (unique constraint on `user_id, deed_id, entry_date, edited_by_user_id`)
+- **Entry Rule**: Entries are created directly for the deed being tracked (parent or child)
+- **History**: Full edit history maintained in entries table (no separate activity_logs needed)
+- **Revert Window**: Owner can revert friend/follower changes within 30 days
 
-#### **sub_entry_values**
-```sql
-- sub_entry_value_id (UUID, Primary Key)
-- entry_id (UUID, Foreign Key → entries.entry_id, ON DELETE CASCADE, Indexed)
-- sub_deed_id (UUID, Foreign Key → sub_deeds.sub_deed_id, ON DELETE CASCADE)
-- measure_value (VARCHAR, Nullable)  -- For scale-based sub-deeds
-- count_value (INTEGER, Nullable)  -- For count-based sub-deeds
-- created_at (TIMESTAMP)
-- updated_at (TIMESTAMP)
-```
-
-**Constraints**: Same as entries - either measure_value or count_value must be set based on parent deed's measure_type.
 
 #### **friend_relationships**
 ```sql
 - relationship_id (UUID, Primary Key)
 - requester_user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
 - receiver_user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
-- permission_type (ENUM: 'read_only', 'write_only', 'read_write', Not Null)
+- relationship_type (ENUM: 'friend', 'follow', Not Null)
+  -- 'friend': Mutual friendship (requires acceptance)
+  -- 'follow': One-way following (approval optional)
 - status (ENUM: 'pending', 'accepted', 'rejected', 'blocked', Default: 'pending', Indexed)
 - accepted_at (TIMESTAMP, Nullable)
 - created_at (TIMESTAMP, Indexed)
@@ -258,19 +241,26 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```
 
 **Constraints**: 
-- Unique constraint on `(requester_user_id, receiver_user_id)`
+- Unique constraint on `(requester_user_id, receiver_user_id, relationship_type)`
 - Check constraint: `requester_user_id != receiver_user_id`
+- **Note**: Deed-level permissions are managed in `friend_deed_permissions` table
 
-#### **activity_logs**
+#### **friend_deed_permissions**
 ```sql
-- log_id (UUID, Primary Key)
-- entry_id (UUID, Foreign Key → entries.entry_id, ON DELETE CASCADE, Indexed)
-- user_id (UUID, Foreign Key → users.user_id)  -- Who made the change
-- action_type (ENUM: 'created', 'updated', 'deleted', Not Null)
-- old_values (JSONB, Nullable)  -- Snapshot before change
-- new_values (JSONB, Nullable)  -- Snapshot after change
-- created_at (TIMESTAMP, Indexed)
+- permission_id (UUID, Primary Key)
+- relationship_id (UUID, Foreign Key → friend_relationships.relationship_id, ON DELETE CASCADE, Indexed)
+- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- permission_type (ENUM: 'read', 'write', Not Null)
+- is_active (BOOLEAN, Default: true)
+- created_at (TIMESTAMP)
+- updated_at (TIMESTAMP)
 ```
+
+**Constraints**:
+- Unique constraint on `(relationship_id, deed_id, permission_type)` for write permissions
+- Multiple read permissions allowed per deed
+- Only one write permission allowed per deed (enforced at application level)
+- **Note**: Deed-level permissions allow fine-grained access control
 
 #### **daily_reflection_messages**
 ```sql
@@ -359,7 +349,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ### Relationships Summary
 
 ```
-users (1) ────< (M) deeds (user-created deeds)
+users (1) ────< (M) deeds (all deeds, including defaults owned by SYSTEM_USER_ID)
 users (1) ────< (M) entries
 users (1) ────< (M) user_default_deeds
 users (1) ────< (M) friend_relationships (as requester)
@@ -370,15 +360,13 @@ users (1) ────< (M) demerits (custom demerits)
 users (1) ────< (M) user_achievements
 users (1) ────< (M) user_demerits
 
-deeds (1) ────< (M) sub_deeds
+deeds (1) ────< (M) deeds (self-referencing: parent_deed_id)
 deeds (1) ────< (M) scale_definitions
 deeds (1) ────< (M) entries
 deeds (1) ────< (M) user_default_deeds (default deeds)
+deeds (1) ────< (M) friend_deed_permissions
 
-entries (1) ────< (M) sub_entry_values
-entries (1) ────< (M) activity_logs
-
-sub_deeds (1) ────< (M) sub_entry_values
+friend_relationships (1) ────< (M) friend_deed_permissions
 
 achievements (1) ────< (M) user_achievements
 demerits (1) ────< (M) user_demerits
@@ -395,45 +383,41 @@ demerits (1) ────< (M) user_demerits
 3. **Onboarding - Default Deed Selection**:
    - System presents option to accept default deeds (Namaz, Lie)
    - If user accepts:
-     * Query default deeds (WHERE is_default = true AND name IN ('Namaz', 'Lie'))
+     * Query default deeds (WHERE user_id = SYSTEM_USER_ID AND is_default = true AND name IN ('Namaz', 'Lie'))
      * For each selected default deed:
        - Create user_default_deeds record with is_active = true
-       - If deed has sub-deeds, sub-deeds automatically available
+       - If deed has child deeds (parent_deed_id set), child deeds automatically available
    - If user skips:
      * No default deeds added (user can add them later)
 4. User can customize default deeds at any time (add/remove via user_default_deeds)
+5. User can create their own copy of default deeds (new deed row with their user_id)
 ```
 
 ### 2. Daily Entry Creation Flow
 ```
-1. User selects date and deed
+1. User selects date and deed (can be parent or child deed)
 2. System validates:
    - Deed exists and is accessible to user (default via user_default_deeds or owned)
    - Deed is not hidden from input (hide_type != 'hide_from_all')
-   - Entry doesn't already exist for date+deed (unless updating)
-3. **Entry Constraint Validation**:
-   - Check if deed has sub-deeds:
-     * If YES: Only allow entry creation for sub-deeds (via sub_entry_values)
-     * If NO: Allow entry creation directly for the deed
-4. If scale-based:
-   - User selects from scale_definitions for that deed/sub-deed
-   - Store value in entries.measure_value or sub_entry_values.measure_value
-5. If count-based:
+   - User has permission (owner or friend/follower with write permission)
+3. If scale-based:
+   - User selects from scale_definitions for that deed
+   - Store value in entries.measure_value
+4. If count-based:
    - User enters numeric value
-   - Store value in entries.count_value or sub_entry_values.count_value
-6. If deed has sub-deeds:
-   - User provides values for each sub-deed (not for parent deed)
-   - Create sub_entry_values records linked to entry
-   - Validate measure_type consistency
-7. Create entry record (or update existing)
-8. **Daily Reflection Messages** (optional):
+   - Store value in entries.count_value
+5. **Friend/Follower Edit Handling**:
+   - If edited by friend/follower: Set edited_by_user_id, create new entry row
+   - Old entry remains intact (full history maintained)
+   - Owner can revert within 30 days
+6. Create entry record
+7. **Daily Reflection Messages** (optional):
    - User can add/update daily_reflection_messages for the date
    - One hasanaat_message and/or one saiyyiaat_message per day
-9. Create activity_log record (action: 'created' or 'updated')
-10. **Achievement/Demerit Check** (background process):
-    - Evaluate achievement conditions based on entries of the day
-    - Evaluate demerit conditions based on entries of the day
-    - Create user_achievements or user_demerits records if conditions met
+8. **Achievement/Demerit Check** (background process):
+   - Evaluate achievement conditions based on entries of the day
+   - Evaluate demerit conditions based on entries of the day
+   - Create user_achievements or user_demerits records if conditions met
 ```
 
 ### 3. Custom Deed Creation Flow
@@ -444,8 +428,11 @@ demerits (1) ────< (M) user_demerits
    - Create scale_definitions records
 3. If count-based:
    - No scale_definitions needed
-4. Optionally create sub_deeds (with same measure_type)
-5. Create deed record with user_id
+4. Optionally create child deeds (sub-deeds):
+   - Set parent_deed_id to parent deed_id
+   - Child deeds inherit measure_type from parent
+   - Supports unlimited nesting
+5. Create deed record with user_id (NOT NULL)
 6. Deed now available for logging
 ```
 
@@ -499,16 +486,22 @@ demerits (1) ────< (M) user_demerits
 4. Save to daily_reflection_messages table (one record per user per day)
 ```
 
-### 7. Friend Access Flow
+### 7. Friend/Follow Access Flow
 ```
-1. Friend navigates to friend's entries
+1. Friend/follower navigates to user's entries
 2. System checks friend_relationships:
    - Status = 'accepted'
-   - Permission_type allows requested operation
-3. Query entries with friend's user_id
-4. For write operations:
-   - Create/update entry with created_by_user_id = friend's user_id
-   - Log activity with friend's user_id
+   - Relationship_type = 'friend' or 'follow'
+3. System checks friend_deed_permissions:
+   - For read: Check if friend/follower has read permission for the deed
+   - For write: Check if friend/follower has write permission for the deed
+   - Only one friend/follower can have write permission per deed
+4. Query entries with user's user_id (deed owner)
+5. For write operations:
+   - Create new entry row with edited_by_user_id = friend/follower's user_id
+   - Old entry remains intact (full history)
+   - Owner can revert within 30 days
+6. History tracking: All edits maintained in entries table via edited_by_user_id
 ```
 
 ---
@@ -562,24 +555,33 @@ demerits (1) ────< (M) user_demerits
   - Trigger to validate measure_value exists in scale_definitions
 
 ### 6. **Default Deeds Management**
-- **Strategy**: System-level deeds with `user_id = NULL` and `is_default = true`
+- **Strategy**: All deeds have `user_id NOT NULL` (uniform ownership model)
+- **Default Deeds**: Owned by `SYSTEM_USER_ID` (special system user)
+- **Custom Deeds**: Owned by creating user
 - **Assignment**: Optional during onboarding via `user_default_deeds` junction table (user chooses to accept or skip)
 - **Customization**: Users can add/remove default deeds at any time via `user_default_deeds` table
-- **Updates**: System-level updates to default deeds can propagate or remain versioned
+- **User Customization**: Users can create their own copy of default deeds (new deed row with their user_id)
+- **Benefits**: Uniform handling, no NULL checks, clear ownership, easier permission management
 
-### 7. **Measure Type Consistency**
+### 7. **Self-Referencing Deeds Structure**
+- **Strategy**: Single `deeds` table with `parent_deed_id` for unlimited nesting
+- **Benefits**:
+  - Removed `sub_deeds` and `sub_entry_values` tables (2 tables eliminated)
+  - Simpler schema, easier maintenance
+  - Fully flexible for any number of sub-deeds
+  - Less joins in queries
+  - Unlimited nesting support
+- **Implementation**:
+  - `parent_deed_id = NULL` → main deed
+  - `parent_deed_id ≠ NULL` → child deed (sub-deed)
+  - Child deeds inherit `measure_type` from parent
+  - Entries created directly for the deed being tracked (parent or child)
+
+### 8. **Measure Type Consistency**
 - **Enforcement**:
   - Database constraint: Check that entry matches deed.measure_type
   - Application logic: Validate before insert/update
-  - Sub-deeds: Inherit from parent deed (no separate measure_type column)
-
-### 8. **Entry Constraint for Sub-Deeds**
-- **Rule**: If a deed has sub-deeds, entries can ONLY be created for sub-deeds (via sub_entry_values), NOT for the parent deed
-- **Enforcement**:
-  - Application logic: Check if deed has sub-deeds before allowing entry creation
-  - Database trigger: Prevent entry creation for deeds with sub-deeds (enforce at database level as backup)
-  - Example: Namaz has sub-deeds (Fajr, Zuhr, etc.) → entries only for sub-deeds, not Namaz directly
-  - Example: Lie has no sub-deeds → entries can be created directly for Lie
+  - Child deeds: Inherit from parent deed (no separate measure_type column)
 
 ### 9. **Hide Type Management**
 - **Two Types**:
@@ -611,10 +613,21 @@ demerits (1) ────< (M) user_demerits
   - All prayers except Fajr in mosque (specific_sub_deeds condition)
   - All prayers late/not prayed (all_sub_deeds with multiple scale_values)
 
-### 12. **Friend Permissions**
-- **Granularity**: Three levels (read_only, write_only, read_write)
-- **Enforcement**: Application-level authorization checks
-- **Audit**: Track all friend actions via activity_logs
+### 12. **Friend/Follow Relationships and Permissions**
+- **Relationship Types**:
+  - `friend`: Mutual friendship (requires acceptance)
+  - `follow`: One-way following (approval optional)
+- **Deed-Level Permissions**:
+  - Stored in `friend_deed_permissions` table
+  - **Read**: Multiple friends/followers can have read access per deed
+  - **Write**: Only one friend/follower can have write access per deed
+  - Fine-grained control per deed/sub-deed
+- **Edit Tracking**:
+  - Friend/follower edits tracked via `edited_by_user_id` in entries table
+  - Creates new entry row when friend/follower edits (old value remains)
+  - Full history maintained in entries table (no separate activity_logs needed)
+- **Revert Window**: Owner can revert friend/follower changes within 30 days
+- **Benefits**: Simple, flexible, scalable design with full edit history
 
 ---
 
@@ -640,18 +653,22 @@ CREATE INDEX idx_deeds_user_category ON deeds(user_id, category, is_active);
 CREATE INDEX idx_deeds_default ON deeds(is_default) WHERE is_default = true;
 CREATE INDEX idx_deeds_user_active ON deeds(user_id, is_active) WHERE is_active = true;
 
--- Sub-entry queries
-CREATE INDEX idx_sub_entry_values_entry ON sub_entry_values(entry_id);
-CREATE INDEX idx_sub_entry_values_sub_deed ON sub_entry_values(sub_deed_id);
+-- Self-referencing deeds (parent-child relationships)
+CREATE INDEX idx_deeds_parent ON deeds(parent_deed_id, is_active);
+CREATE INDEX idx_deeds_user_parent ON deeds(user_id, parent_deed_id, is_active);
 
 -- Friend relationships
 CREATE INDEX idx_friend_relationships_requester ON friend_relationships(requester_user_id, status);
 CREATE INDEX idx_friend_relationships_receiver ON friend_relationships(receiver_user_id, status);
 CREATE INDEX idx_friend_relationships_active ON friend_relationships(requester_user_id, receiver_user_id) WHERE status = 'accepted';
 
--- Activity logs (for audit queries)
-CREATE INDEX idx_activity_logs_entry ON activity_logs(entry_id, created_at DESC);
-CREATE INDEX idx_activity_logs_user_date ON activity_logs(user_id, created_at DESC);
+-- Friend deed permissions
+CREATE INDEX idx_friend_deed_permissions_relationship ON friend_deed_permissions(relationship_id, is_active);
+CREATE INDEX idx_friend_deed_permissions_deed ON friend_deed_permissions(deed_id, is_active);
+CREATE INDEX idx_friend_deed_permissions_write ON friend_deed_permissions(deed_id, permission_type) WHERE permission_type = 'write';
+
+-- Entry edit tracking (friend/follower edits)
+CREATE INDEX idx_entries_edited_by ON entries(edited_by_user_id, entry_date DESC) WHERE edited_by_user_id IS NOT NULL;
 
 -- Scale definitions (for validation)
 CREATE INDEX idx_scale_definitions_deed ON scale_definitions(deed_id, is_active);
@@ -674,7 +691,6 @@ CREATE INDEX idx_user_demerits_demerit ON user_demerits(demerit_id, demerit_date
 
 -- Hide type filtering (for analytics)
 CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
-CREATE INDEX idx_sub_deeds_hide_type ON sub_deeds(hide_type, is_active);
 ```
 
 #### **Composite Indexes for Analytics**
@@ -916,24 +932,27 @@ CREATE POLICY user_entries_policy ON entries
 This database architecture plan provides a robust, scalable foundation for Kitaab that:
 
 ✅ **Supports core functionality**: 
-   - Daily logging with entry rules (sub-deed constraints)
-   - Optional default deeds onboarding (user choice)
+   - Daily logging with self-referencing deeds (unlimited nesting)
+   - Optional default deeds onboarding (user choice, all deeds have user_id)
    - Daily reflection messages (one Hasanaat, one Saiyyiaat per day)
    - Custom deeds with flexible measurement systems
    - Analytics with hide type filtering
    - Achievements and demerits with conditional evaluation
-   - Social features with permission-based access
+   - Social features: mutual friendship and one-way following with deed-level permissions
 
 ✅ **Ensures data integrity**: 
    - Constraints, relationships, validation rules
-   - Entry constraint validation (deeds with sub-deeds vs. without)
+   - Self-referencing deeds structure (simplified schema, 2 tables removed)
+   - Uniform ownership model (all deeds have user_id, defaults owned by SYSTEM_USER_ID)
    - Hide type management for conditional visibility
    - Unique constraints for daily reflection messages
+   - Full edit history in entries table (no separate activity_logs)
 
 ✅ **Optimizes performance**: 
-   - Strategic indexing (including new tables: achievements, demerits, reflection messages)
+   - Strategic indexing (simplified schema reduces joins)
    - Caching, partitioning
    - Hide type indexes for efficient filtering
+   - Self-referencing structure reduces table complexity
 
 ✅ **Maintains security**: 
    - Encryption, access control, audit trails
@@ -944,7 +963,15 @@ This database architecture plan provides a robust, scalable foundation for Kitaa
 ✅ **Enables maintainability**: 
    - Clear schema, migration strategy, monitoring
 
-The design balances flexibility (custom deeds, scales, achievements/demerits) with structure (optional default deeds, entry rules, hide types) while maintaining performance and security standards required for a platform serving millions of users.
+The design balances flexibility (custom deeds, scales, achievements/demerits, unlimited nesting) with structure (uniform ownership model, deed-level permissions, 30-day revert window) while maintaining performance and security standards required for a platform serving millions of users.
+
+**Key Simplifications**:
+- ✅ **2 tables removed**: `sub_deeds` and `sub_entry_values` eliminated
+- ✅ **Self-referencing deeds**: Unlimited nesting with `parent_deed_id`
+- ✅ **Uniform ownership**: All deeds have `user_id NOT NULL` (SYSTEM_USER_ID for defaults)
+- ✅ **Deed-level permissions**: Multiple read, one write per deed
+- ✅ **Full history**: Edit tracking in entries table (no separate activity_logs)
+- ✅ **Friend/Follow model**: Supports both mutual friendship and one-way following
 
 ---
 
