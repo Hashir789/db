@@ -556,12 +556,19 @@ demerits (1) ────< (M) user_demerits
 
 ### 6. **Default Deeds Management**
 - **Strategy**: All deeds have `user_id NOT NULL` (uniform ownership model)
-- **Default Deeds**: Owned by `SYSTEM_USER_ID` (special system user)
-- **Custom Deeds**: Owned by creating user
+- **SYSTEM_USER_ID**: Special system user created during database initialization
+  - Owns all default deeds (Namaz, Lie, etc.)
+  - `user_id = SYSTEM_USER_ID` AND `is_default = true` identifies default deeds
+  - Cannot be deleted or modified by regular users
+- **Custom Deeds**: Owned by creating user (`user_id = creating user's ID`)
 - **Assignment**: Optional during onboarding via `user_default_deeds` junction table (user chooses to accept or skip)
 - **Customization**: Users can add/remove default deeds at any time via `user_default_deeds` table
-- **User Customization**: Users can create their own copy of default deeds (new deed row with their user_id)
-- **Benefits**: Uniform handling, no NULL checks, clear ownership, easier permission management
+- **User Customization**: Users can create their own copy of default deeds (new deed row with their user_id, parent_deed_id pointing to original)
+- **Benefits**: 
+  - Uniform handling (no NULL checks needed)
+  - Clear ownership model
+  - Easier permission management
+  - Consistent queries across all deeds
 
 ### 7. **Self-Referencing Deeds Structure**
 - **Strategy**: Single `deeds` table with `parent_deed_id` for unlimited nesting
@@ -706,13 +713,13 @@ CREATE INDEX idx_entries_date_trunc ON entries(user_id, DATE_TRUNC('month', entr
 #### **Partial Indexes (Conditional)**
 ```sql
 -- Only index active records (saves space, improves performance)
-CREATE INDEX idx_entries_active ON entries(user_id, entry_date) WHERE is_active = true;
 CREATE INDEX idx_deeds_active ON deeds(user_id) WHERE is_active = true;
+CREATE INDEX idx_deeds_parent_active ON deeds(parent_deed_id) WHERE is_active = true AND parent_deed_id IS NOT NULL;
 ```
 
 ### Index Maintenance
 - **Monitoring**: Track index usage and query performance
-- **Rebuilding**: Periodic REINDEX for high-write tables (entries, activity_logs)
+- **Rebuilding**: Periodic REINDEX for high-write tables (entries)
 - **Statistics**: Keep PostgreSQL statistics updated (AUTO_VACUUM enabled)
 
 ---
@@ -742,7 +749,7 @@ CREATE INDEX idx_deeds_active ON deeds(user_id) WHERE is_active = true;
 ### 4. **Access Control**
 - **Row-Level Security (PostgreSQL RLS)**:
   - Policy: Users can only access their own entries
-  - Exception: Friends with accepted relationships and appropriate permissions
+  - Exception: Friends/followers with accepted relationships and deed-level permissions
 - **Implementation**:
 ```sql
 -- Example RLS policy (conceptual)
@@ -753,12 +760,14 @@ CREATE POLICY user_entries_policy ON entries
     user_id = current_user_id() 
     OR EXISTS (
       SELECT 1 FROM friend_relationships fr
-      WHERE (fr.requester_user_id = current_user_id() 
-             AND fr.receiver_user_id = entries.user_id
-             AND fr.status = 'accepted')
-      OR (fr.receiver_user_id = current_user_id() 
-          AND fr.requester_user_id = entries.user_id
-          AND fr.status = 'accepted')
+      JOIN friend_deed_permissions fdp ON fr.relationship_id = fdp.relationship_id
+      WHERE fdp.deed_id = entries.deed_id
+        AND fdp.is_active = true
+        AND fr.status = 'accepted'
+        AND (
+          (fr.requester_user_id = current_user_id() AND fr.receiver_user_id = entries.user_id)
+          OR (fr.receiver_user_id = current_user_id() AND fr.requester_user_id = entries.user_id)
+        )
     )
   );
 ```
@@ -977,11 +986,18 @@ The design balances flexibility (custom deeds, scales, achievements/demerits, un
 
 **Next Steps** (Implementation Phase):
 1. Set up PostgreSQL database instance
-2. Create initial schema with all tables and constraints
-3. Implement default deeds seeding
-4. Create database migration scripts
-5. Set up indexing and connection pooling
-6. Configure backup and replication
-7. Implement security policies (RLS, encryption)
-8. Set up monitoring and alerting
+2. Create SYSTEM_USER_ID (special system user for default deeds)
+3. Create initial schema with all tables and constraints (12 tables total)
+4. Implement default deeds seeding (owned by SYSTEM_USER_ID)
+5. Create database migration scripts
+6. Set up indexing and connection pooling
+7. Configure backup and replication
+8. Implement security policies (RLS, encryption)
+9. Set up monitoring and alerting
+
+**Schema Summary**:
+- **Total Tables**: 12 (reduced from 14)
+- **Removed**: `sub_deeds`, `sub_entry_values`, `activity_logs`
+- **Added**: `friend_deed_permissions`
+- **Modified**: `deeds` (added `parent_deed_id`, `user_id NOT NULL`), `entries` (added `edited_by_user_id`), `friend_relationships` (added `relationship_type`)
 
