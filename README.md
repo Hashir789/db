@@ -160,15 +160,17 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 #### **deeds**
 ```sql
 - deed_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, Not Null)
+- user_id (UUID, Foreign Key → users.user_id, Not Null, Indexed)
   -- SYSTEM_USER_ID for default deeds, user_id for custom deeds
-- parent_deed_id (UUID, Foreign Key → deeds.deed_id, Nullable)
+- parent_deed_id (UUID, Foreign Key → deeds.deed_id, Nullable, Indexed)
   -- NULL for main deeds, set for child deeds (sub-deeds)
   -- Enables unlimited nesting
+  -- Self-referencing foreign key
 - name (VARCHAR, Not Null)
 - description (TEXT, Nullable)
 - category (ENUM: 'hasanaat', 'saiyyiaat', Not Null, Indexed)
 - measure_type (ENUM: 'scale_based', 'count_based', Not Null)
+  -- Child deeds inherit this from parent (enforced via trigger)
 - is_default (BOOLEAN, Default: false, Indexed)
 - is_active (BOOLEAN, Default: true)
 - hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
@@ -218,12 +220,12 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```
 
 **Constraints**:
-- For scale-based deeds: `measure_value` must be NOT NULL, `count_value` must be NULL
-- For count-based deeds: `count_value` must be NOT NULL, `measure_value` must be NULL
-- One entry per user per deed per date per editor (unique constraint on `user_id, deed_id, entry_date, edited_by_user_id`)
+- **Check Constraint**: `(measure_value IS NOT NULL AND count_value IS NULL) OR (count_value IS NOT NULL AND measure_value IS NULL)` - ensures measure type consistency
+- **Check Constraint**: `measure_value` must exist in `scale_definitions` for the deed (if scale-based) - enforced via trigger
+- **Unique Constraint**: `(user_id, deed_id, entry_date, edited_by_user_id)` - one entry per user per deed per date per editor
+- **Revert Window Constraint**: Friend/follower edits can only be reverted within 30 days (enforced via trigger/application logic)
 - **Entry Rule**: Entries are created directly for the deed being tracked (parent or child)
 - **History**: Full edit history maintained in entries table (no separate activity_logs needed)
-- **Revert Window**: Owner can revert friend/follower changes within 30 days
 
 
 #### **friend_relationships**
@@ -549,10 +551,20 @@ demerits (1) ────< (M) user_demerits
 ### 5. **Data Validation Strategy**
 - **Application Layer**: Primary validation (UX, business logic)
 - **Database Layer**: Constraints and triggers for data integrity
-  - Check constraints for measure_type consistency
-  - Foreign key constraints with CASCADE rules
-  - Unique constraints on (user_id, deed_id, entry_date)
-  - Trigger to validate measure_value exists in scale_definitions
+  - **Check Constraints**: 
+    - Measure type consistency: `(measure_value IS NOT NULL AND count_value IS NULL) OR (count_value IS NOT NULL AND measure_value IS NULL)`
+    - Self-reference prevention: `requester_user_id != receiver_user_id` in friend_relationships
+    - Default deed validation: If `is_default = true`, then `user_id = SYSTEM_USER_ID` (enforced via trigger)
+  - **Foreign Key Constraints**: All foreign keys with appropriate CASCADE rules
+  - **Unique Constraints**: 
+    - `(user_id, deed_id, entry_date, edited_by_user_id)` on entries
+    - `(user_id, reflection_date)` on daily_reflection_messages
+    - `(requester_user_id, receiver_user_id, relationship_type)` on friend_relationships
+  - **Triggers**:
+    - Validate `measure_value` exists in `scale_definitions` for scale-based deeds
+    - Validate child deeds inherit `measure_type` from parent
+    - Enforce 30-day revert window for friend/follower edits
+    - Auto-update `updated_at` timestamps
 
 ### 6. **Default Deeds Management**
 - **Strategy**: All deeds have `user_id NOT NULL` (uniform ownership model)
@@ -627,14 +639,189 @@ demerits (1) ────< (M) user_demerits
 - **Deed-Level Permissions**:
   - Stored in `friend_deed_permissions` table
   - **Read**: Multiple friends/followers can have read access per deed
-  - **Write**: Only one friend/follower can have write access per deed
+  - **Write**: Only one friend/follower can have write access per deed (enforced at application level)
   - Fine-grained control per deed/sub-deed
+  - Permissions are independent of relationship type (friend vs follow)
 - **Edit Tracking**:
   - Friend/follower edits tracked via `edited_by_user_id` in entries table
   - Creates new entry row when friend/follower edits (old value remains)
   - Full history maintained in entries table (no separate activity_logs needed)
-- **Revert Window**: Owner can revert friend/follower changes within 30 days
+- **Revert Window**: 
+  - Owner can revert friend/follower changes within 30 days
+  - Enforced via application logic: `WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'`
+  - Database trigger can prevent reverts after 30 days
 - **Benefits**: Simple, flexible, scalable design with full edit history
+
+---
+
+## Database Constraints & Triggers
+
+### Check Constraints
+
+```sql
+-- Entries: Measure type consistency
+ALTER TABLE entries ADD CONSTRAINT check_measure_type 
+  CHECK (
+    (measure_value IS NOT NULL AND count_value IS NULL) OR
+    (count_value IS NOT NULL AND measure_value IS NULL)
+  );
+
+-- Friend relationships: Prevent self-reference
+ALTER TABLE friend_relationships ADD CONSTRAINT check_no_self_reference
+  CHECK (requester_user_id != receiver_user_id);
+
+-- Deeds: Default deeds must be owned by SYSTEM_USER_ID
+-- (Enforced via trigger, not constraint, for flexibility)
+```
+
+### Unique Constraints
+
+```sql
+-- Entries: One entry per user per deed per date per editor
+ALTER TABLE entries ADD CONSTRAINT unique_entry_per_editor
+  UNIQUE (user_id, deed_id, entry_date, edited_by_user_id);
+
+-- Daily reflection messages: One per user per day
+ALTER TABLE daily_reflection_messages ADD CONSTRAINT unique_reflection_per_day
+  UNIQUE (user_id, reflection_date);
+
+-- Friend relationships: One relationship per pair per type
+ALTER TABLE friend_relationships ADD CONSTRAINT unique_relationship
+  UNIQUE (requester_user_id, receiver_user_id, relationship_type);
+
+-- Friend deed permissions: One write permission per deed
+-- (Enforced at application level, but can add partial unique index)
+CREATE UNIQUE INDEX idx_friend_deed_permissions_one_write
+  ON friend_deed_permissions(deed_id, permission_type)
+  WHERE permission_type = 'write' AND is_active = true;
+
+-- User achievements: One achievement per user per achievement per day
+ALTER TABLE user_achievements ADD CONSTRAINT unique_user_achievement_per_day
+  UNIQUE (user_id, achievement_id, achieved_date);
+
+-- User demerits: One demerit per user per demerit per day
+ALTER TABLE user_demerits ADD CONSTRAINT unique_user_demerit_per_day
+  UNIQUE (user_id, demerit_id, demerit_date);
+```
+
+### Database Triggers
+
+```sql
+-- Trigger: Validate measure_value exists in scale_definitions
+CREATE OR REPLACE FUNCTION validate_measure_value()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.measure_value IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM scale_definitions sd
+      JOIN deeds d ON sd.deed_id = d.deed_id
+      WHERE d.deed_id = NEW.deed_id
+        AND sd.scale_value = NEW.measure_value
+        AND sd.is_active = true
+    ) THEN
+      RAISE EXCEPTION 'measure_value % does not exist in scale_definitions for deed %', 
+        NEW.measure_value, NEW.deed_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_validate_measure_value
+  BEFORE INSERT OR UPDATE ON entries
+  FOR EACH ROW
+  WHEN (NEW.measure_value IS NOT NULL)
+  EXECUTE FUNCTION validate_measure_value();
+
+-- Trigger: Validate child deeds inherit measure_type from parent
+CREATE OR REPLACE FUNCTION validate_child_measure_type()
+RETURNS TRIGGER AS $$
+DECLARE
+  parent_measure_type VARCHAR;
+BEGIN
+  IF NEW.parent_deed_id IS NOT NULL THEN
+    SELECT measure_type INTO parent_measure_type
+    FROM deeds
+    WHERE deed_id = NEW.parent_deed_id;
+    
+    IF NEW.measure_type != parent_measure_type THEN
+      RAISE EXCEPTION 'Child deed measure_type (%) must match parent measure_type (%)', 
+        NEW.measure_type, parent_measure_type;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_validate_child_measure_type
+  BEFORE INSERT OR UPDATE ON deeds
+  FOR EACH ROW
+  WHEN (NEW.parent_deed_id IS NOT NULL)
+  EXECUTE FUNCTION validate_child_measure_type();
+
+-- Trigger: Auto-update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = CURRENT_TIMESTAMP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Apply to all tables with updated_at
+CREATE TRIGGER trigger_update_deeds_updated_at
+  BEFORE UPDATE ON deeds
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER trigger_update_entries_updated_at
+  BEFORE UPDATE ON entries
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER trigger_update_friend_relationships_updated_at
+  BEFORE UPDATE ON friend_relationships
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+-- Trigger: Enforce 30-day revert window for friend/follower edits
+CREATE OR REPLACE FUNCTION check_revert_window()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- This trigger prevents reverts after 30 days
+  -- Called when owner tries to delete friend/follower entry
+  IF OLD.edited_by_user_id IS NOT NULL THEN
+    IF OLD.created_at < CURRENT_TIMESTAMP - INTERVAL '30 days' THEN
+      RAISE EXCEPTION 'Cannot revert entry after 30 days. Entry created at %', OLD.created_at;
+    END IF;
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_check_revert_window
+  BEFORE DELETE ON entries
+  FOR EACH ROW
+  WHEN (OLD.edited_by_user_id IS NOT NULL)
+  EXECUTE FUNCTION check_revert_window();
+
+-- Trigger: Validate default deeds are owned by SYSTEM_USER_ID
+CREATE OR REPLACE FUNCTION validate_default_deed_ownership()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.is_default = true AND NEW.user_id != '00000000-0000-0000-0000-000000000000'::UUID THEN
+    RAISE EXCEPTION 'Default deeds must be owned by SYSTEM_USER_ID';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_validate_default_deed_ownership
+  BEFORE INSERT OR UPDATE ON deeds
+  FOR EACH ROW
+  WHEN (NEW.is_default = true)
+  EXECUTE FUNCTION validate_default_deed_ownership();
+```
 
 ---
 
@@ -663,6 +850,7 @@ CREATE INDEX idx_deeds_user_active ON deeds(user_id, is_active) WHERE is_active 
 -- Self-referencing deeds (parent-child relationships)
 CREATE INDEX idx_deeds_parent ON deeds(parent_deed_id, is_active);
 CREATE INDEX idx_deeds_user_parent ON deeds(user_id, parent_deed_id, is_active);
+CREATE INDEX idx_deeds_parent_active ON deeds(parent_deed_id, is_active) WHERE parent_deed_id IS NOT NULL AND is_active = true;
 
 -- Friend relationships
 CREATE INDEX idx_friend_relationships_requester ON friend_relationships(requester_user_id, status);
@@ -676,6 +864,7 @@ CREATE INDEX idx_friend_deed_permissions_write ON friend_deed_permissions(deed_i
 
 -- Entry edit tracking (friend/follower edits)
 CREATE INDEX idx_entries_edited_by ON entries(edited_by_user_id, entry_date DESC) WHERE edited_by_user_id IS NOT NULL;
+CREATE INDEX idx_entries_user_date_edited ON entries(user_id, entry_date, edited_by_user_id);
 
 -- Scale definitions (for validation)
 CREATE INDEX idx_scale_definitions_deed ON scale_definitions(deed_id, is_active);
@@ -683,6 +872,9 @@ CREATE INDEX idx_scale_definitions_deed ON scale_definitions(deed_id, is_active)
 -- Daily reflection messages
 CREATE INDEX idx_daily_reflection_user_date ON daily_reflection_messages(user_id, reflection_date DESC);
 CREATE INDEX idx_daily_reflection_date ON daily_reflection_messages(reflection_date);
+-- Full-text search index for reflection messages (if search functionality needed)
+CREATE INDEX idx_daily_reflection_hasanaat_fts ON daily_reflection_messages USING gin(to_tsvector('english', hasanaat_message)) WHERE hasanaat_message IS NOT NULL;
+CREATE INDEX idx_daily_reflection_saiyyiaat_fts ON daily_reflection_messages USING gin(to_tsvector('english', saiyyiaat_message)) WHERE saiyyiaat_message IS NOT NULL;
 
 -- Achievements and demerits
 CREATE INDEX idx_achievements_user ON achievements(user_id, is_active) WHERE user_id IS NOT NULL;
@@ -805,10 +997,41 @@ CREATE POLICY user_entries_policy ON entries
 - **Strategy**: Range partitioning by `entry_date`
   - Partition by month or year
   - Example: `entries_2024_01`, `entries_2024_02`, etc.
+- **Implementation**:
+  ```sql
+  -- Create partitioned table
+  CREATE TABLE entries (
+      entry_id UUID NOT NULL,
+      user_id UUID NOT NULL,
+      deed_id UUID NOT NULL,
+      entry_date DATE NOT NULL,
+      measure_value VARCHAR,
+      count_value INTEGER,
+      edited_by_user_id UUID,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP,
+      PRIMARY KEY (entry_id, entry_date)
+  ) PARTITION BY RANGE (entry_date);
+  
+  -- Create monthly partitions
+  CREATE TABLE entries_2024_01 PARTITION OF entries
+      FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+  CREATE TABLE entries_2024_02 PARTITION OF entries
+      FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
+  -- ... continue for each month
+  
+  -- Auto-create future partitions via scheduled job
+  -- Archive old partitions (move to cold storage after 2+ years)
+  ```
+- **Partition Management**:
+  - **Retention**: Keep active partitions for 2 years, archive older data
+  - **Auto-creation**: Scheduled job creates next month's partition
+  - **Maintenance**: Monthly partition pruning and archival
 - **Benefits**: 
-  - Faster queries on date ranges
+  - Faster queries on date ranges (partition pruning)
   - Easier archival of old data
   - Improved maintenance (drop old partitions)
+  - Better index performance per partition
 
 ### 2. **Caching Strategy**
 

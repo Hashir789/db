@@ -16,7 +16,8 @@ The `deeds` table stores both system default deeds (like Namaz and Lie) and user
 ```sql
 CREATE TABLE deeds (
     deed_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    parent_deed_id UUID REFERENCES deeds(deed_id) ON DELETE CASCADE,
     name VARCHAR NOT NULL,
     description TEXT,
     category ENUM('hasanaat', 'saiyyiaat') NOT NULL,
@@ -24,6 +25,7 @@ CREATE TABLE deeds (
     is_default BOOLEAN NOT NULL DEFAULT false,
     is_active BOOLEAN NOT NULL DEFAULT true,
     hide_type ENUM('none', 'hide_from_all', 'hide_from_graphs') NOT NULL DEFAULT 'none',
+    display_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -32,6 +34,9 @@ CREATE INDEX idx_deeds_user_category ON deeds(user_id, category, is_active);
 CREATE INDEX idx_deeds_default ON deeds(is_default) WHERE is_default = true;
 CREATE INDEX idx_deeds_user_active ON deeds(user_id, is_active) WHERE is_active = true;
 CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
+CREATE INDEX idx_deeds_parent ON deeds(parent_deed_id, is_active);
+CREATE INDEX idx_deeds_user_parent ON deeds(user_id, parent_deed_id, is_active);
+CREATE INDEX idx_deeds_parent_active ON deeds(parent_deed_id, is_active) WHERE parent_deed_id IS NOT NULL AND is_active = true;
 ```
 
 ## Fields
@@ -44,18 +49,32 @@ CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
   - Used as foreign key in related tables
 - **Example**: `660e8400-e29b-41d4-a716-446655440001`
 
-### `user_id` (UUID, Foreign Key, Nullable)
+### `user_id` (UUID, Foreign Key, Not Null)
 - **Type**: UUID
 - **Purpose**: Owner of the deed
 - **Foreign Key**: `users.user_id`
-- **Nullable**: Yes
+- **Constraints**: NOT NULL (uniform ownership model)
 - **Logic**:
-  - **NULL** = System default deed (available to all users)
-  - **Set** = Custom deed created by that specific user
+  - **SYSTEM_USER_ID** = System default deed (available to all users)
+  - **User UUID** = Custom deed created by that specific user
 - **Cascade**: ON DELETE CASCADE (if user is deleted, their custom deeds are deleted)
 - **Example**: 
-  - `NULL` for default deed "Namaz"
+  - `00000000-0000-0000-0000-000000000000` (SYSTEM_USER_ID) for default deed "Namaz"
   - `550e8400-e29b-41d4-a716-446655440000` for custom deed
+
+### `parent_deed_id` (UUID, Foreign Key, Nullable)
+- **Type**: UUID
+- **Purpose**: References parent deed for hierarchical structure
+- **Foreign Key**: `deeds.deed_id` (self-referencing)
+- **Nullable**: Yes
+- **Logic**:
+  - **NULL** = Main deed (top-level)
+  - **Set** = Child deed (sub-deed) under parent
+- **Enables**: Unlimited nesting of deeds
+- **Inheritance**: Child deeds inherit `measure_type` from parent (enforced via trigger)
+- **Example**: 
+  - `NULL` for main deed "Namaz"
+  - `660e8400-e29b-41d4-a716-446655440001` (Namaz deed_id) for child deed "Fajr"
 
 ### `name` (VARCHAR, Not Null)
 - **Type**: VARCHAR
@@ -165,10 +184,10 @@ CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
 
 The `deeds` table is referenced by:
 
-1. **sub_deeds** (sub-deeds under this deed)
-   - `sub_deeds.deed_id` → `deeds.deed_id`
-   - One deed can have many sub-deeds
-   - CASCADE DELETE: If deed is deleted, sub-deeds are deleted
+1. **deeds** (self-referencing: child deeds)
+   - `deeds.parent_deed_id` → `deeds.deed_id`
+   - One deed can have many child deeds (unlimited nesting)
+   - CASCADE DELETE: If parent deed is deleted, child deeds are deleted
 
 2. **scale_definitions** (scale values for scale-based deeds)
    - `scale_definitions.deed_id` → `deeds.deed_id`
@@ -196,114 +215,156 @@ The `deeds` table is referenced by:
 ## Constraints
 
 - **Primary Key**: `deed_id` (unique, not null)
-- **Foreign Key**: `user_id` → `users.user_id` (nullable, CASCADE on delete)
-- **Check Constraint**: If `is_default = true`, then `user_id` should be NULL (enforced at application level)
+- **Foreign Keys**: 
+  - `user_id` → `users.user_id` (NOT NULL, CASCADE on delete)
+  - `parent_deed_id` → `deeds.deed_id` (nullable, self-referencing, CASCADE on delete)
+- **Check Constraint**: If `is_default = true`, then `user_id = SYSTEM_USER_ID` (enforced via trigger)
+- **Trigger**: Child deeds must inherit `measure_type` from parent (enforced via trigger)
 
 ## Entry Rules
 
-**Important**: The way entries are created depends on whether the deed has sub-deeds:
+**Important**: Entries are created directly for the deed being tracked (parent or child):
 
-1. **If deed has sub-deeds** (e.g., Namaz with Fajr, Zuhr, etc.):
-   - Entries can ONLY be created for sub-deeds (via `sub_entry_values` table)
-   - Cannot create entry directly for the parent deed
-   - Example: For Namaz, you can only log Fajr, Zuhr, Asr, Maghrib, Isha - not "Namaz" itself
+1. **For any deed** (parent or child):
+   - Entries are created directly in the `entries` table
+   - Set `deed_id` to the specific deed being tracked
+   - Example: For Namaz with child deeds (Fajr, Zuhr, etc.), create entries with `deed_id` pointing to Fajr, Zuhr, etc.
 
-2. **If deed has no sub-deeds** (e.g., Lie):
-   - Entries can be created directly for the deed (in `entries` table)
-   - No sub-entry values needed
-   - Example: For Lie, you log directly to "Lie" deed
+2. **No separate sub-entry table needed**:
+   - The self-referencing structure eliminates the need for `sub_entry_values` table
+   - All entries go directly into the `entries` table
+   - Example: For "Lie" deed (no children), create entry with `deed_id` pointing to Lie deed
 
 ## Example Data
 
-### Default Deed (Namaz)
+### Default Deed (Namaz - Parent)
 ```sql
 INSERT INTO deeds (
     deed_id,
     user_id,
+    parent_deed_id,
     name,
     description,
     category,
     measure_type,
     is_default,
     is_active,
-    hide_type
+    hide_type,
+    display_order
 ) VALUES (
     '660e8400-e29b-41d4-a716-446655440001',
-    NULL,  -- NULL for default deeds
+    '00000000-0000-0000-0000-000000000000',  -- SYSTEM_USER_ID
+    NULL,  -- NULL for parent deeds
     'Namaz',
     'Daily prayers - track each prayer separately',
     'hasanaat',
     'scale_based',
     true,
     true,
-    'none'
+    'none',
+    0
 );
-```
 
-### Default Deed (Lie)
-```sql
+-- Child deeds (Fajr, Zuhr, etc.)
 INSERT INTO deeds (
     deed_id,
     user_id,
+    parent_deed_id,
     name,
     description,
     category,
     measure_type,
     is_default,
     is_active,
-    hide_type
+    hide_type,
+    display_order
+) VALUES 
+-- Fajr
+('770e8400-e29b-41d4-a716-446655440001', '00000000-0000-0000-0000-000000000000', '660e8400-e29b-41d4-a716-446655440001', 'Fajr', 'Morning prayer', 'hasanaat', 'scale_based', true, true, 'none', 1),
+-- Zuhr
+('770e8400-e29b-41d4-a716-446655440002', '00000000-0000-0000-0000-000000000000', '660e8400-e29b-41d4-a716-446655440001', 'Zuhr', 'Midday prayer', 'hasanaat', 'scale_based', true, true, 'none', 2),
+-- Asr
+('770e8400-e29b-41d4-a716-446655440003', '00000000-0000-0000-0000-000000000000', '660e8400-e29b-41d4-a716-446655440001', 'Asr', 'Afternoon prayer', 'hasanaat', 'scale_based', true, true, 'none', 3),
+-- Maghrib
+('770e8400-e29b-41d4-a716-446655440004', '00000000-0000-0000-0000-000000000000', '660e8400-e29b-41d4-a716-446655440001', 'Maghrib', 'Evening prayer', 'hasanaat', 'scale_based', true, true, 'none', 4),
+-- Isha
+('770e8400-e29b-41d4-a716-446655440005', '00000000-0000-0000-0000-000000000000', '660e8400-e29b-41d4-a716-446655440001', 'Isha', 'Night prayer', 'hasanaat', 'scale_based', true, true, 'none', 5);
+```
+
+### Default Deed (Lie - No Children)
+```sql
+INSERT INTO deeds (
+    deed_id,
+    user_id,
+    parent_deed_id,
+    name,
+    description,
+    category,
+    measure_type,
+    is_default,
+    is_active,
+    hide_type,
+    display_order
 ) VALUES (
     '660e8400-e29b-41d4-a716-446655440002',
-    NULL,
+    '00000000-0000-0000-0000-000000000000',  -- SYSTEM_USER_ID
+    NULL,  -- No parent (main deed)
     'Lie',
     'Track instances of lying',
     'saiyyiaat',
     'scale_based',
     true,
     true,
-    'none'
+    'none',
+    0
 );
 ```
 
-### Custom Deed (Charity)
+### Custom Deed (Charity - No Children)
 ```sql
 INSERT INTO deeds (
     deed_id,
     user_id,
+    parent_deed_id,
     name,
     description,
     category,
     measure_type,
     is_default,
     is_active,
-    hide_type
+    hide_type,
+    display_order
 ) VALUES (
     '660e8400-e29b-41d4-a716-446655440003',
     '550e8400-e29b-41d4-a716-446655440000',  -- User's ID
+    NULL,  -- No parent (main deed)
     'Charity',
     'Track charitable donations and acts',
     'hasanaat',
     'count_based',
     false,
     true,
-    'none'
+    'none',
+    0
 );
 ```
 
 ## Usage Notes
 
-1. **Default Deeds**: Created by system, `user_id = NULL`, `is_default = true`
+1. **Default Deeds**: Created by system, `user_id = SYSTEM_USER_ID`, `is_default = true`
 2. **Custom Deeds**: Created by users, `user_id` is set, `is_default = false`
-3. **Sub-deeds**: Check if deed has sub-deeds before allowing entry creation
+3. **Child Deeds**: Use `parent_deed_id` to create hierarchical structure (unlimited nesting)
 4. **Hide Type**: Update dynamically based on conditions (e.g., date-based for Ramadan Fasts)
 5. **Soft Delete**: Use `is_active = false` instead of deleting records
-6. **Measure Type**: Must match between deed and entries (enforced at application level)
+6. **Measure Type**: Must match between deed and entries (enforced at database level)
+7. **Child Inheritance**: Child deeds automatically inherit `measure_type` from parent (enforced via trigger)
 
 ## Business Rules
 
 1. **Default Deeds**: Cannot be deleted by users, only deactivated via `user_default_deeds.is_active`
 2. **Custom Deeds**: Can be deleted by the owner (soft delete via `is_active = false`)
-3. **Sub-deed Inheritance**: Sub-deeds inherit `measure_type` from parent deed
-4. **Entry Constraint**: If deed has sub-deeds, entries must be for sub-deeds only
+3. **Child Deed Inheritance**: Child deeds inherit `measure_type` from parent deed (enforced via trigger)
+4. **Entry Creation**: Entries are created directly for the deed being tracked (parent or child)
+5. **Self-Reference**: A deed cannot be its own parent (enforced at application level)
 
 

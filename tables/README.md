@@ -1,6 +1,6 @@
 # Database Tables Documentation
 
-This directory contains detailed documentation for all 14 database tables in the Kitaab platform.
+This directory contains detailed documentation for all 12 database tables in the Kitaab platform.
 
 ## Table List
 
@@ -14,64 +14,58 @@ This directory contains detailed documentation for all 14 database tables in the
 2. **[deeds.md](deeds.md)** - Deed definitions (default and custom)
    - System default deeds (Namaz, Lie)
    - User-created custom deeds
+   - Self-referencing structure for hierarchical organization (parent_deed_id)
    - Category (Hasanaat/Saiyyiaat) and measurement type
 
-3. **[sub_deeds.md](sub_deeds.md)** - Sub-deeds under parent deeds
-   - Hierarchical organization (e.g., Fajr, Zuhr under Namaz)
-   - Display order and visibility control
-
-4. **[scale_definitions.md](scale_definitions.md)** - Scale values for scale-based deeds
+3. **[scale_definitions.md](scale_definitions.md)** - Scale values for scale-based deeds
    - Predefined scale options (Yes/No, Excellent/Good, etc.)
    - Numeric values for analytics
 
 ### Entry Tables
 
-5. **[entries.md](entries.md)** - Daily deed entries
+4. **[entries.md](entries.md)** - Daily deed entries
    - User's daily deed logging
    - Scale-based or count-based values
-   - Entry rules (deeds with/without sub-deeds)
-
-6. **[sub_entry_values.md](sub_entry_values.md)** - Entry values for sub-deeds
-   - Values for individual sub-deeds
-   - Used when deed has sub-deeds
+   - Entries created directly for the deed being tracked (parent or child)
+   - Friend/follower edit tracking
 
 ### Reflection & Social Tables
 
-7. **[daily_reflection_messages.md](daily_reflection_messages.md)** - Daily reflection messages
+5. **[daily_reflection_messages.md](daily_reflection_messages.md)** - Daily reflection messages
    - One Hasanaat message per day
    - One Saiyyiaat message per day
    - Optional daily reflections
 
-8. **[friend_relationships.md](friend_relationships.md)** - Friend/parent-child connections
-   - Permission levels (read_only, write_only, read_write)
+6. **[friend_relationships.md](friend_relationships.md)** - Friend and follow connections
+   - Relationship types (friend vs follow)
    - Relationship status tracking
+   - **Note**: Deed-level permissions managed in `friend_deed_permissions` table
 
-9. **[activity_logs.md](activity_logs.md)** - Audit trail for entry modifications
-   - Who made changes (owner or friend)
-   - Before/after snapshots
-   - Action types (created, updated, deleted)
+7. **[friend_deed_permissions.md](friend_deed_permissions.md)** - Deed-level permissions for friends/followers
+   - Read and write permissions per deed
+   - Multiple read permissions, one write permission per deed
 
 ### Achievement & Demerit Tables
 
-10. **[achievements.md](achievements.md)** - Achievement definitions
-    - System-wide and custom achievements
-    - Flexible JSONB condition configurations
+8. **[achievements.md](achievements.md)** - Achievement definitions
+   - System-wide and custom achievements
+   - Flexible JSONB condition configurations
 
-11. **[user_achievements.md](user_achievements.md)** - User achievement earnings
-    - When users earn achievements
-    - Achievement history
+9. **[user_achievements.md](user_achievements.md)** - User achievement earnings
+   - When users earn achievements
+   - Achievement history
 
-12. **[demerits.md](demerits.md)** - Demerit definitions
+10. **[demerits.md](demerits.md)** - Demerit definitions
     - System-wide and custom demerits
     - Flexible JSONB condition configurations
 
-13. **[user_demerits.md](user_demerits.md)** - User demerit earnings
+11. **[user_demerits.md](user_demerits.md)** - User demerit earnings
     - When users earn demerits
     - Demerit history
 
 ### Configuration Tables
 
-14. **[user_default_deeds.md](user_default_deeds.md)** - User's default deeds
+12. **[user_default_deeds.md](user_default_deeds.md)** - User's default deeds
     - Tracks which default deeds user opted-in to
     - Optional during onboarding
     - Add/remove anytime
@@ -79,10 +73,12 @@ This directory contains detailed documentation for all 14 database tables in the
 ## Quick Reference
 
 ### Entry Rules
-- **Deed with sub-deeds**: Create entries only for sub-deeds (via `sub_entry_values`)
-- **Deed without sub-deeds**: Create entries directly for the deed (via `entries`)
+- **All deeds**: Create entries directly in `entries` table for the deed being tracked (parent or child)
+- **No separate sub-entry table**: The self-referencing `deeds` structure eliminates the need for `sub_entry_values`
 
 ### Default Deeds
+- All deeds have `user_id NOT NULL` (uniform ownership model)
+- Default deeds are owned by `SYSTEM_USER_ID` (not NULL)
 - Users can choose to accept or skip default deeds during onboarding
 - Users can add/remove default deeds at any time
 - Tracked in `user_default_deeds` table
@@ -96,6 +92,11 @@ This directory contains detailed documentation for all 14 database tables in the
 - System-wide: `user_id = NULL` (available to all users)
 - Custom: `user_id` is set (user-specific)
 - Conditions stored in JSONB `condition_config` field
+
+### Schema Simplifications
+- **Removed tables**: `sub_deeds`, `sub_entry_values`, `activity_logs`
+- **Self-referencing deeds**: Uses `parent_deed_id` in `deeds` table for unlimited nesting
+- **Full history**: Edit tracking in `entries` table via `edited_by_user_id` (no separate activity_logs)
 
 ## Documentation Structure
 

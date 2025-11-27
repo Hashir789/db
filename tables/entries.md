@@ -20,16 +20,28 @@ CREATE TABLE entries (
     entry_date DATE NOT NULL,
     measure_value VARCHAR,  -- For scale-based deeds
     count_value INTEGER,    -- For count-based deeds
-    created_by_user_id UUID NOT NULL REFERENCES users(user_id),
+    edited_by_user_id UUID REFERENCES users(user_id),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP,
-    updated_by_user_id UUID REFERENCES users(user_id)
+    updated_at TIMESTAMP
 );
 
+-- Constraints
+ALTER TABLE entries ADD CONSTRAINT check_measure_type 
+  CHECK (
+    (measure_value IS NOT NULL AND count_value IS NULL) OR
+    (count_value IS NOT NULL AND measure_value IS NULL)
+  );
+
+ALTER TABLE entries ADD CONSTRAINT unique_entry_per_editor
+  UNIQUE (user_id, deed_id, entry_date, edited_by_user_id);
+
+-- Indexes
 CREATE INDEX idx_entries_user_date ON entries(user_id, entry_date DESC);
 CREATE INDEX idx_entries_deed_date ON entries(deed_id, entry_date DESC);
 CREATE INDEX idx_entries_user_deed_date ON entries(user_id, deed_id, entry_date);
 CREATE INDEX idx_entries_date_range ON entries(entry_date) WHERE entry_date >= CURRENT_DATE - INTERVAL '1 year';
+CREATE INDEX idx_entries_edited_by ON entries(edited_by_user_id, entry_date DESC) WHERE edited_by_user_id IS NOT NULL;
+CREATE INDEX idx_entries_user_date_edited ON entries(user_id, entry_date, edited_by_user_id);
 ```
 
 ## Fields
@@ -51,13 +63,13 @@ CREATE INDEX idx_entries_date_range ON entries(entry_date) WHERE entry_date >= C
 
 ### `deed_id` (UUID, Foreign Key, Not Null)
 - **Type**: UUID
-- **Purpose**: The deed this entry is for
+- **Purpose**: The deed this entry is for (can be parent or child deed)
 - **Foreign Key**: `deeds.deed_id`
 - **Constraints**: NOT NULL
 - **Cascade**: ON DELETE CASCADE (if deed is deleted, entries are deleted)
 - **Indexed**: Yes (for deed-based queries)
 - **Usage**: Links entry to the deed being tracked
-- **Note**: Only used for deeds WITHOUT sub-deeds (see Entry Rules below)
+- **Note**: Can reference either a parent deed or a child deed (sub-deed) - entries are created directly for the deed being tracked
 
 ### `entry_date` (DATE, Not Null, Indexed)
 - **Type**: DATE
@@ -98,38 +110,29 @@ CREATE INDEX idx_entries_date_range ON entries(entry_date) WHERE entry_date >= C
   - `3` (3 times backbiting)
 - **Constraint**: Must be NULL for scale-based deeds
 
-### `created_by_user_id` (UUID, Foreign Key, Not Null)
+### `edited_by_user_id` (UUID, Foreign Key, Nullable)
 - **Type**: UUID
-- **Purpose**: Tracks who created the entry (owner or friend)
+- **Purpose**: Tracks who edited the entry (for friend/follower edits)
 - **Foreign Key**: `users.user_id`
-- **Constraints**: NOT NULL
+- **Nullable**: Yes
 - **Usage**: 
-  - If entry owner created it: `created_by_user_id = user_id`
-  - If friend created it: `created_by_user_id = friend's user_id`
-  - Used for audit trail and permission tracking
+  - **NULL** = Entry created/edited by owner
+  - **Set** = Entry created/edited by friend/follower
+  - Creates new entry row when friend/follower edits (old value remains for history)
+  - Used for audit trail and revert functionality
 
 ### `created_at` (TIMESTAMP, Indexed)
 - **Type**: TIMESTAMP
 - **Purpose**: Records when the entry was created
 - **Default**: CURRENT_TIMESTAMP
 - **Indexed**: Yes (for chronological queries)
-- **Usage**: Track creation time for audit and sorting
+- **Usage**: Track creation time for audit, sorting, and revert window (30 days)
 
 ### `updated_at` (TIMESTAMP)
 - **Type**: TIMESTAMP
 - **Purpose**: Tracks when the entry was last modified
 - **Nullable**: Yes (null if never updated)
-- **Usage**: Track modification time
-
-### `updated_by_user_id` (UUID, Foreign Key, Nullable)
-- **Type**: UUID
-- **Purpose**: Tracks who last updated the entry
-- **Foreign Key**: `users.user_id`
-- **Nullable**: Yes (null if never updated)
-- **Usage**: 
-  - If entry owner updated it: `updated_by_user_id = user_id`
-  - If friend updated it: `updated_by_user_id = friend's user_id`
-  - Used for audit trail
+- **Usage**: Track modification time (auto-updated via trigger)
 
 ## Indexes
 
@@ -154,19 +157,9 @@ The `entries` table is referenced by:
    - One deed can have many entries
    - CASCADE DELETE: If deed is deleted, entries are deleted
 
-3. **users** (who created/updated)
-   - `entries.created_by_user_id` → `users.user_id`
-   - `entries.updated_by_user_id` → `users.user_id`
-   - Tracks friend actions
-
-4. **sub_entry_values** (sub-deed entry values)
-   - `sub_entry_values.entry_id` → `entries.entry_id`
-   - One entry can have many sub-entry values
-   - CASCADE DELETE: If entry is deleted, sub-entry values are deleted
-
-5. **activity_logs** (audit trail)
-   - `activity_logs.entry_id` → `entries.entry_id`
-   - One entry can have many activity log entries
+3. **users** (who edited - friend/follower)
+   - `entries.edited_by_user_id` → `users.user_id`
+   - Tracks friend/follower edits (NULL for owner's entries)
 
 ## Constraints
 
@@ -174,31 +167,31 @@ The `entries` table is referenced by:
 - **Foreign Keys**: 
   - `user_id` → `users.user_id` (NOT NULL, CASCADE on delete)
   - `deed_id` → `deeds.deed_id` (NOT NULL, CASCADE on delete)
-  - `created_by_user_id` → `users.user_id` (NOT NULL)
-  - `updated_by_user_id` → `users.user_id` (nullable)
-- **Unique Constraint**: `(user_id, deed_id, entry_date)` - one entry per user per deed per date
-- **Check Constraints** (enforced at application level):
-  - For scale-based deeds: `measure_value` must be NOT NULL, `count_value` must be NULL
-  - For count-based deeds: `count_value` must be NOT NULL, `measure_value` must be NULL
-  - `measure_value` must exist in `scale_definitions` for the deed (if scale-based)
+  - `edited_by_user_id` → `users.user_id` (nullable)
+- **Unique Constraint**: `(user_id, deed_id, entry_date, edited_by_user_id)` - one entry per user per deed per date per editor
+- **Check Constraints**:
+  - Measure type consistency: `(measure_value IS NOT NULL AND count_value IS NULL) OR (count_value IS NOT NULL AND measure_value IS NULL)`
+  - `measure_value` must exist in `scale_definitions` for the deed (if scale-based) - enforced via trigger
 
 ## Critical Entry Rules
 
-### Rule 1: Deeds with Sub-Deeds
-**If a deed has sub-deeds** (e.g., Namaz with Fajr, Zuhr, etc.):
-- **DO NOT** create entries in this table for the parent deed
-- **ONLY** create entries for sub-deeds using the `sub_entry_values` table
-- Example: For "Namaz" deed, you can only log Fajr, Zuhr, Asr, Maghrib, Isha - NOT "Namaz" itself
+### Rule 1: Direct Entry Creation
+**Entries are created directly for the deed being tracked** (parent or child):
+- **For any deed** (parent or child): Create entry with `deed_id` pointing to that specific deed
+- **No separate sub-entry table**: All entries go directly into this table
+- Example: For Namaz with child deeds (Fajr, Zuhr, etc.), create entries with `deed_id` pointing to Fajr, Zuhr, etc.
+- Example: For "Lie" deed (no children), create entry with `deed_id` pointing to Lie deed
 
-### Rule 2: Deeds without Sub-Deeds
-**If a deed has no sub-deeds** (e.g., Lie):
-- **DO** create entries directly in this table for the deed
-- **DO NOT** create sub-entry values
-- Example: For "Lie" deed, log directly to "Lie" in this table
-
-### Rule 3: Measure Type Consistency
+### Rule 2: Measure Type Consistency
 - **Scale-based deeds**: Must set `measure_value` (from `scale_definitions`), `count_value` must be NULL
 - **Count-based deeds**: Must set `count_value` (numeric), `measure_value` must be NULL
+- Enforced at database level via check constraint
+
+### Rule 3: Friend/Follower Edits
+- **Owner entries**: `edited_by_user_id = NULL`
+- **Friend/follower edits**: `edited_by_user_id = friend/follower's user_id`
+- **History**: Creates new entry row when friend/follower edits (old value remains)
+- **Revert Window**: Owner can revert friend/follower changes within 30 days (enforced via trigger)
 
 ## Example Data
 
@@ -244,7 +237,7 @@ INSERT INTO entries (
 );
 ```
 
-### Entry Created by Friend
+### Entry Created by Friend/Follower
 ```sql
 INSERT INTO entries (
     entry_id,
@@ -253,7 +246,7 @@ INSERT INTO entries (
     entry_date,
     measure_value,
     count_value,
-    created_by_user_id
+    edited_by_user_id
 ) VALUES (
     '990e8400-e29b-41d4-a716-446655440003',
     '550e8400-e29b-41d4-a716-446655440000',  -- Entry owner
@@ -261,25 +254,49 @@ INSERT INTO entries (
     '2024-01-15',
     'Yes',  -- Committed lie
     NULL,
-    '550e8400-e29b-41d4-a716-446655440999'  -- Created by friend
+    '550e8400-e29b-41d4-a716-446655440999'  -- Edited by friend/follower
+);
+```
+
+### Entry for Child Deed (Namaz - Fajr)
+```sql
+INSERT INTO entries (
+    entry_id,
+    user_id,
+    deed_id,  -- Points to Fajr child deed_id
+    entry_date,
+    measure_value,
+    count_value,
+    edited_by_user_id
+) VALUES (
+    '990e8400-e29b-41d4-a716-446655440004',
+    '550e8400-e29b-41d4-a716-446655440000',  -- User ID
+    '770e8400-e29b-41d4-a716-446655440001',  -- Fajr child deed_id
+    '2024-01-15',
+    'Prayed',  -- Scale value
+    NULL,
+    NULL  -- Created by owner
 );
 ```
 
 ## Usage Notes
 
-1. **Sub-Deed Check**: Always check if deed has sub-deeds before creating entry
-2. **Measure Type**: Validate measure type matches deed's measure_type
-3. **Scale Value Validation**: For scale-based, validate measure_value exists in scale_definitions
-4. **Unique Constraint**: One entry per user per deed per date (update existing instead of creating duplicate)
-5. **Friend Permissions**: Check friend permissions before allowing friend to create/update entries
+1. **Direct Entry Creation**: Create entries directly for the deed being tracked (parent or child)
+2. **Measure Type**: Validate measure type matches deed's measure_type (enforced at database level)
+3. **Scale Value Validation**: For scale-based, validate measure_value exists in scale_definitions (enforced via trigger)
+4. **Unique Constraint**: One entry per user per deed per date per editor (update existing instead of creating duplicate)
+5. **Friend Permissions**: Check friend permissions in `friend_deed_permissions` before allowing friend to create/update entries
 6. **Date Handling**: Use user's timezone to determine entry_date
+7. **Revert Window**: Friend/follower edits can be reverted within 30 days (enforced via trigger)
 
 ## Business Rules
 
-1. **Entry Constraint**: Cannot create entry for deed with sub-deeds (must use sub_entry_values)
-2. **Measure Type**: Must match deed's measure_type
-3. **Scale Validation**: measure_value must exist in scale_definitions for the deed
-4. **Unique Entry**: One entry per user per deed per date (enforced by unique constraint)
-5. **Friend Access**: Friends can create/update entries based on permission_type in friend_relationships
+1. **Entry Creation**: Entries are created directly for the deed being tracked (parent or child)
+2. **Measure Type**: Must match deed's measure_type (enforced at database level)
+3. **Scale Validation**: measure_value must exist in scale_definitions for the deed (enforced via trigger)
+4. **Unique Entry**: One entry per user per deed per date per editor (enforced by unique constraint)
+5. **Friend Access**: Friends/followers can create/update entries based on permissions in `friend_deed_permissions` table
+6. **Edit History**: Friend/follower edits create new entry rows (old value remains for full history)
+7. **Revert Window**: Owner can revert friend/follower changes within 30 days
 
 

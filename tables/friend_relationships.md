@@ -1,14 +1,13 @@
 # friend_relationships Table
 
 ## Overview
-The `friend_relationships` table manages friend/parent-child connections between users. It tracks permission levels (read-only, write-only, or read-write) and relationship status (pending, accepted, rejected, blocked).
+The `friend_relationships` table manages friend and follow connections between users. It tracks relationship type (friend vs follow) and status (pending, accepted, rejected, blocked). **Note**: Deed-level permissions are managed separately in the `friend_deed_permissions` table, not in this table.
 
 ## Purpose
-- Manage friend connections between users
-- Track permission levels for friend access
-- Support parent-child relationships
-- Control access to user entries
-- Track relationship status and history
+- Manage friend and follow connections between users
+- Track relationship type (mutual friendship vs one-way following)
+- Track relationship status (pending, accepted, rejected, blocked)
+- **Note**: Deed-level permissions (read/write) are managed in `friend_deed_permissions` table
 
 ## Schema
 
@@ -17,11 +16,13 @@ CREATE TABLE friend_relationships (
     relationship_id UUID PRIMARY KEY,
     requester_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     receiver_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    permission_type ENUM('read_only', 'write_only', 'read_write') NOT NULL,
+    relationship_type ENUM('friend', 'follow') NOT NULL,
     status ENUM('pending', 'accepted', 'rejected', 'blocked') NOT NULL DEFAULT 'pending',
     accepted_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    CONSTRAINT check_no_self_reference CHECK (requester_user_id != receiver_user_id),
+    CONSTRAINT unique_relationship UNIQUE (requester_user_id, receiver_user_id, relationship_type)
 );
 
 CREATE INDEX idx_friend_relationships_requester ON friend_relationships(requester_user_id, status);
@@ -55,17 +56,15 @@ CREATE INDEX idx_friend_relationships_active ON friend_relationships(requester_u
 - **Indexed**: Yes (for receiver-based queries)
 - **Usage**: Identifies who received the relationship request
 
-### `permission_type` (ENUM, Not Null)
-- **Type**: ENUM('read_only', 'write_only', 'read_write')
-- **Purpose**: Defines what the requester can do with receiver's entries
+### `relationship_type` (ENUM, Not Null)
+- **Type**: ENUM('friend', 'follow')
+- **Purpose**: Defines the type of relationship
 - **Values**:
-  - `'read_only'`: Can only view receiver's entries (no modifications)
-  - `'write_only'`: Can only create/update receiver's entries (cannot view)
-  - `'read_write'`: Can both view and create/update receiver's entries
+  - `'friend'`: Mutual friendship (requires acceptance from receiver)
+  - `'follow'`: One-way following (approval optional, depends on receiver's settings)
 - **Usage**: 
-  - Set by receiver when accepting request
-  - Enforced at application level for entry access
-  - Can be updated after relationship is established
+  - Determines relationship behavior and acceptance requirements
+  - **Note**: Deed-level permissions are managed separately in `friend_deed_permissions` table
 
 ### `status` (ENUM, Default: 'pending', Indexed)
 - **Type**: ENUM('pending', 'accepted', 'rejected', 'blocked')
@@ -137,17 +136,20 @@ The `friend_relationships` table references:
 
 ## Important Rules
 
-### Rule 1: Bidirectional Relationships
+### Rule 1: Relationship Types
+- **Friend**: Mutual friendship requiring acceptance from receiver
+- **Follow**: One-way following (approval may be optional based on receiver's settings)
 - Relationships are unidirectional (requester → receiver)
 - For bidirectional friendship, create two separate records:
-  - User A → User B (requester: A, receiver: B)
-  - User B → User A (requester: B, receiver: A)
+  - User A → User B (requester: A, receiver: B, type: 'friend')
+  - User B → User A (requester: B, receiver: A, type: 'friend')
 
-### Rule 2: Permission Enforcement
-- `permission_type` is enforced at application level
-- Friends with `read_only` can only query/view entries
-- Friends with `write_only` can only create/update entries (cannot view)
-- Friends with `read_write` can do both
+### Rule 2: Deed-Level Permissions
+- **Permissions are NOT stored in this table**
+- Deed-level permissions are managed in `friend_deed_permissions` table
+- Multiple friends/followers can have **read** access per deed
+- Only one friend/follower can have **write** access per deed (enforced at application level)
+- Permissions are independent of relationship type (friend vs follow)
 
 ### Rule 3: Status Transitions
 - `pending` → `accepted` (when receiver accepts)
@@ -163,14 +165,14 @@ INSERT INTO friend_relationships (
     relationship_id,
     requester_user_id,
     receiver_user_id,
-    permission_type,
+    relationship_type,
     status,
     accepted_at
 ) VALUES (
     'bb0e8400-e29b-41d4-a716-446655440001',
     '550e8400-e29b-41d4-a716-446655440000',  -- User A (requester)
     '550e8400-e29b-41d4-a716-446655440999',  -- User B (receiver)
-    'read_write',  -- Default permission (can be changed by receiver)
+    'friend',  -- Mutual friendship
     'pending',
     NULL  -- Not yet accepted
 );
@@ -182,28 +184,29 @@ INSERT INTO friend_relationships (
 UPDATE friend_relationships
 SET 
     status = 'accepted',
-    permission_type = 'read_write',  -- Receiver can set this
     accepted_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE relationship_id = 'bb0e8400-e29b-41d4-a716-446655440001';
+
+-- After acceptance, receiver can set deed-level permissions in friend_deed_permissions table
 ```
 
-### Parent-Child Relationship
+### Follow Relationship
 ```sql
--- Parent (requester) → Child (receiver) with read_write
+-- User A follows User B (one-way)
 INSERT INTO friend_relationships (
     relationship_id,
     requester_user_id,
     receiver_user_id,
-    permission_type,
+    relationship_type,
     status,
     accepted_at
 ) VALUES (
-    'bb0e8400-e29b-41d4-a716-446655440002',
-    '550e8400-e29b-41d4-a716-446655440888',  -- Parent
-    '550e8400-e29b-41d4-a716-446655440999',  -- Child
-    'read_write',  -- Parent can view and manage child's entries
-    'accepted',
+    'bb0e8400-e29b-41d4-a716-446655440003',
+    '550e8400-e29b-41d4-a716-446655440000',  -- User A (requester/follower)
+    '550e8400-e29b-41d4-a716-446655440999',  -- User B (receiver/followed)
+    'follow',  -- One-way following
+    'accepted',  -- May be auto-accepted based on User B's settings
     CURRENT_TIMESTAMP
 );
 ```
@@ -228,19 +231,20 @@ WHERE relationship_id = 'bb0e8400-e29b-41d4-a716-446655440001';
 
 ## Usage Notes
 
-1. **Permission Check**: Always check `permission_type` before allowing friend to access entries
+1. **Deed-Level Permissions**: Check `friend_deed_permissions` table for read/write permissions, not this table
 2. **Status Check**: Only allow access when `status = 'accepted'`
 3. **Bidirectional**: Create two records for bidirectional friendship
-4. **Permission Updates**: Receiver can update `permission_type` after acceptance
+4. **Relationship Type**: `friend` requires acceptance, `follow` may be auto-accepted
 5. **Blocking**: Either party can block the relationship
-6. **Audit Trail**: Track permission changes via `updated_at` and activity logs
+6. **Audit Trail**: Track relationship changes via `updated_at`
 
 ## Business Rules
 
-1. **Unique Relationship**: One relationship record per (requester, receiver) pair
-2. **Self-Reference**: Cannot create relationship with yourself (enforced at application level)
-3. **Permission Control**: Receiver sets permission when accepting (can be changed later)
-4. **Status Management**: Only `accepted` relationships allow entry access
+1. **Unique Relationship**: One relationship record per (requester, receiver, relationship_type) combination
+2. **Self-Reference**: Cannot create relationship with yourself (enforced via check constraint)
+3. **Deed-Level Permissions**: Permissions are managed in `friend_deed_permissions` table, not here
+4. **Status Management**: Only `accepted` relationships allow entry access (with proper permissions)
 5. **Cascade Delete**: Deleting a user deletes all their relationships
+6. **Permission Independence**: Deed-level permissions are independent of relationship type (friend vs follow)
 
 
