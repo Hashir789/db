@@ -25,9 +25,10 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - **Daily logging**: Chronological entries with daily reflection messages (one Hasanaat message, one Saiyyiaat message per day)
 - **Time-range analytics**: Daily, weekly, monthly, yearly, and custom date ranges
 - **Hide functionality**: Two types - hide from input forms and graphs, or hide from graphs only
-- **Achievements and demerits**: Conditional tracking based on deed/sub-deed patterns
+- **Merits/Demerits system**: Time-based evaluations of user behavior (positive rewards or negative penalties) with AND/OR logic
+- **Targets system**: User-defined, time-bounded goals spanning multiple deeds
 - **Social features**: Mutual friendship and one-way following with deed-level permissions (multiple read, one write per deed)
-- **Optional default deeds**: Users choose to accept default deeds (Namaz, Lie) during onboarding or skip them. All deeds have user_id (defaults owned by SYSTEM_USER_ID)
+- **Deed ownership**: All deeds have user_id (owned by the user who created them)
 - **High scalability**: Support for millions of users
 
 ---
@@ -36,11 +37,8 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 
 ### User Registration & Onboarding
 1. User registers and completes profile setup
-2. **Default Deed Selection**: User is presented with option to:
-   - **Accept default deeds**: Namaz and Lie are added to their account
-   - **Skip default deeds**: Start with custom deeds only
-3. User can customize default deeds at any time (add/remove/modify)
-4. System initializes user's first day entry structure
+2. User can create their own deeds
+3. System initializes user's first day entry structure
 
 ### Daily Deed Logging Workflow
 1. **Entry Creation**: User selects date (default: today)
@@ -55,12 +53,12 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 6. **Save**: Entry stored with timestamp and metadata
 7. **Friend/Follower Edits**: If edited by friend/follower, `edited_by_user_id` is set; owner can revert within 30 days
 
-### Custom Deed Creation Workflow
-1. User navigates to "Custom Deeds"
+### Deed Creation Workflow
+1. User navigates to create a new deed
 2. Selects category (Hasanaat or Saiyyiaat)
 3. Defines deed name and description
 4. Chooses measure type (Scale-based or Count-based)
-5. **If Scale-based**: Defines custom scale values
+5. **If Scale-based**: Defines scale values
 6. **If Count-based**: System sets up numeric input
 7. Optionally adds sub-deeds (with same measure type constraint)
 8. Deed saved and becomes available for logging
@@ -94,11 +92,11 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Stores authentication and profile information
 
 #### 2. **Deeds**
-- Represents both default system deeds (owned by SYSTEM_USER_ID) and user-created custom deeds
+- Represents all deeds in the system (owned by users)
 - Self-referencing structure: `parent_deed_id` allows unlimited nesting
 - Categorized as Hasanaat or Saiyyiaat
 - Contains measure type and scale definitions
-- All deeds have `user_id NOT NULL` (uniform ownership model)
+- All deeds have `user_id NOT NULL` (owned by the creating user)
 
 #### 3. **Entries**
 - Daily logging records for deeds (parent or child)
@@ -124,18 +122,25 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Stores optional daily reflection messages
 - One Hasanaat message and one Saiyyiaat message per user per day
 
-#### 8. **Achievements**
-- Defines achievement conditions and rules
-- Tracks user achievements based on deed/sub-deed patterns
+#### 8. **Merits**
+- Defines time-based evaluation rules (positive rewards or negative penalties)
+- Each merit has a duration window, logical type (AND/OR), and category (positive/negative)
+- System-evaluated performance tracking over defined time periods
 
-#### 9. **Demerits**
-- Defines demerit conditions and rules
-- Tracks user demerits based on deed/sub-deed patterns
+#### 9. **Merit_Items**
+- Conditions attached to each merit/demerit
+- Links to specific deeds with count or scale requirements
+- Only one condition type per item (count-based or scale-based)
 
-#### 10. **User_Default_Deeds**
-- Junction table linking users to default deeds
-- Tracks which default deeds user opted-in during onboarding
-- Users can add/remove default deeds at any time
+#### 10. **Targets**
+- User-defined goals with time bounds (start_date, end_date)
+- Can span multiple deeds
+- Represents personal objectives users set for themselves
+
+#### 11. **Target_Items**
+- Conditions for each target tied to specific deeds
+- Uses count or scale requirements (only one per item)
+- Defines what must be achieved for the target
 
 ---
 
@@ -161,7 +166,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```sql
 - deed_id (UUID, Primary Key)
 - user_id (UUID, Foreign Key → users.user_id, Not Null, Indexed)
-  -- SYSTEM_USER_ID for default deeds, user_id for custom deeds
+  -- Owner of the deed (the user who created it)
 - parent_deed_id (UUID, Foreign Key → deeds.deed_id, Nullable, Indexed)
   -- NULL for main deeds, set for child deeds (sub-deeds)
   -- Enables unlimited nesting
@@ -171,7 +176,6 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - category (ENUM: 'hasanaat', 'saiyyiaat', Not Null, Indexed)
 - measure_type (ENUM: 'scale_based', 'count_based', Not Null)
   -- Child deeds inherit this from parent (enforced via trigger)
-- is_default (BOOLEAN, Default: false, Indexed)
 - is_active (BOOLEAN, Default: true)
 - hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
   -- 'hide_from_all': Hidden from input forms and graphs
@@ -183,8 +187,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```
 
 **Notes**: 
-- All deeds have `user_id NOT NULL` (uniform ownership model)
-- Default deeds are owned by `SYSTEM_USER_ID`
+- All deeds have `user_id NOT NULL` (owned by the creating user)
 - Self-referencing structure: `parent_deed_id` allows unlimited nesting
 - Child deeds inherit `measure_type` from parent deed
 - No separate `sub_deeds` table needed
@@ -279,99 +282,98 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Unique constraint on `(user_id, reflection_date)` - one set of messages per user per day
 - At least one of `hasanaat_message` or `saiyyiaat_message` should be provided (enforced at application level)
 
-#### **achievements**
+#### **merits**
 ```sql
-- achievement_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Nullable)
-  -- NULL for system-wide achievements, user_id for custom achievements
-- name (VARCHAR, Not Null)
-- description (TEXT, Nullable)
-- condition_type (ENUM: 'all_sub_deeds', 'specific_sub_deeds', 'custom', Not Null)
-- condition_config (JSONB, Not Null)
-  -- Stores condition rules (e.g., {"deed_id": "...", "sub_deed_ids": [...], "scale_value": "prayed_in_mosque"})
+- merit_id (UUID, Primary Key)
+- title (VARCHAR, Not Null)  -- Short name for display in UI
+- description (TEXT, Nullable)  -- Explains what it checks and why it matters
+- merit_duration (INTEGER, Not Null)  -- Number of days the evaluation covers
+- merit_type (ENUM: 'AND', 'OR', Not Null)  -- Logical rule
+  -- 'AND': All linked deeds must satisfy their rules
+  -- 'OR': Any one linked deed satisfying its rule is enough
+- merit_category (ENUM: 'positive', 'negative', Not Null)  -- Whether it's positive (achievement-style) or negative (demerit-style)
 - is_active (BOOLEAN, Default: true)
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
 ```
 
-**Usage**: Defines achievement conditions. Example: "All prayers in mosque" = condition_type='all_sub_deeds', condition_config={"deed_id": "namaz_deed_id", "scale_value": "prayed_in_mosque"}
+**Usage**: Defines time-based evaluation rules. Example: "Perfect Prayer Week" = merit_duration=7, merit_type='AND', merit_category='positive' (all prayers must be on time for 7 days)
 
-#### **user_achievements**
+#### **merit_items**
 ```sql
-- user_achievement_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
-- achievement_id (UUID, Foreign Key → achievements.achievement_id, ON DELETE CASCADE)
-- achieved_date (DATE, Not Null, Indexed)
+- merit_item_id (UUID, Primary Key)
+- merit_id (UUID, Foreign Key → merits.merit_id, ON DELETE CASCADE, Indexed)
+- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- merit_items_count (INTEGER, Nullable)  -- Required number of times (only for count-type deeds)
+- scale_id (UUID, Foreign Key → scale_definitions.scale_id, Nullable)  -- Required scale value (only for scale-type deeds)
 - created_at (TIMESTAMP)
 ```
 
 **Constraints**:
-- Unique constraint on `(user_id, achievement_id, achieved_date)` - one achievement per user per achievement per day
+- Check constraint: Only one of `merit_items_count` or `scale_id` can be set (not both, not neither)
+- **Logic**: Only one condition type per item - count-based deeds use `merit_items_count`, scale-based deeds use `scale_id`
 
-#### **demerits**
+**Usage**: Defines conditions for each merit. Each item belongs to exactly one deed and specifies either a count requirement or a scale requirement.
+
+#### **targets**
 ```sql
-- demerit_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Nullable)
-  -- NULL for system-wide demerits, user_id for custom demerits
-- name (VARCHAR, Not Null)
-- description (TEXT, Nullable)
-- condition_type (ENUM: 'all_sub_deeds', 'specific_sub_deeds', 'custom', Not Null)
-- condition_config (JSONB, Not Null)
-  -- Stores condition rules (e.g., {"deed_id": "...", "sub_deed_ids": [...], "scale_values": ["late_prayed", "not_prayed"]})
+- target_id (UUID, Primary Key)
+- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
+- title (VARCHAR, Not Null)  -- Name of the target
+- description (TEXT, Nullable)  -- Explanation of the goal
+- start_date (DATE, Not Null, Indexed)  -- When the target starts
+- end_date (DATE, Not Null, Indexed)  -- When the target ends
 - is_active (BOOLEAN, Default: true)
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
 ```
 
-**Usage**: Defines demerit conditions. Example: "All prayers late/not prayed" = condition_type='all_sub_deeds', condition_config={"deed_id": "namaz_deed_id", "scale_values": ["late_prayed", "not_prayed"]}
+**Usage**: User-defined, time-bounded goals. Example: "Pray 5 times daily for 30 days" = start_date='2024-01-01', end_date='2024-01-30'
 
-#### **user_demerits**
+**Constraints**:
+- Check constraint: `end_date >= start_date`
+- Unique constraint on `(user_id, title, start_date)` - one target per user per title per start date
+
+#### **target_items**
 ```sql
-- user_demerit_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
-- demerit_id (UUID, Foreign Key → demerits.demerit_id, ON DELETE CASCADE)
-- demerit_date (DATE, Not Null, Indexed)
+- target_item_id (UUID, Primary Key)
+- target_id (UUID, Foreign Key → targets.target_id, ON DELETE CASCADE, Indexed)
+- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- target_items_count (INTEGER, Nullable)  -- Required count (if count-based)
+- scale_id (UUID, Foreign Key → scale_definitions.scale_id, Nullable)  -- Required scale (if scale-based)
 - created_at (TIMESTAMP)
 ```
 
 **Constraints**:
-- Unique constraint on `(user_id, demerit_id, demerit_date)` - one demerit per user per demerit per day
+- Check constraint: Only one of `target_items_count` or `scale_id` can be set (not both, not neither)
+- **Logic**: Only one condition type per item - count-based deeds use `target_items_count`, scale-based deeds use `scale_id`
 
-#### **user_default_deeds**
-```sql
-- user_default_deed_id (UUID, Primary Key)
-- user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
-- default_deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE)
-- is_active (BOOLEAN, Default: true)
-- assigned_at (TIMESTAMP, Default: CURRENT_TIMESTAMP)
-```
-
-**Purpose**: Tracks which default deeds user opted-in during onboarding. Users can add/remove default deeds at any time. Useful for analytics and customization per user.
+**Usage**: Defines conditions for each target. Each item belongs to exactly one deed and specifies either a count requirement or a scale requirement.
 
 ### Relationships Summary
 
 ```
-users (1) ────< (M) deeds (all deeds, including defaults owned by SYSTEM_USER_ID)
+users (1) ────< (M) deeds
 users (1) ────< (M) entries
-users (1) ────< (M) user_default_deeds
 users (1) ────< (M) friend_relationships (as requester)
 users (1) ────< (M) friend_relationships (as receiver)
 users (1) ────< (M) daily_reflection_messages
-users (1) ────< (M) achievements (custom achievements)
-users (1) ────< (M) demerits (custom demerits)
-users (1) ────< (M) user_achievements
-users (1) ────< (M) user_demerits
+users (1) ────< (M) targets (user-defined goals)
 
 deeds (1) ────< (M) deeds (self-referencing: parent_deed_id)
 deeds (1) ────< (M) scale_definitions
 deeds (1) ────< (M) entries
-deeds (1) ────< (M) user_default_deeds (default deeds)
 deeds (1) ────< (M) friend_deed_permissions
+deeds (1) ────< (M) merit_items (conditions for merits)
+deeds (1) ────< (M) target_items (conditions for targets)
 
 friend_relationships (1) ────< (M) friend_deed_permissions
 
-achievements (1) ────< (M) user_achievements
-demerits (1) ────< (M) user_demerits
+merits (1) ────< (M) merit_items (conditions per merit)
+targets (1) ────< (M) target_items (conditions per target)
+
+scale_definitions (1) ────< (M) merit_items (scale requirements)
+scale_definitions (1) ────< (M) target_items (scale requirements)
 ```
 
 ---
@@ -382,24 +384,15 @@ demerits (1) ────< (M) user_demerits
 ```
 1. User submits registration → Create user record
 2. User completes profile setup
-3. **Onboarding - Default Deed Selection**:
-   - System presents option to accept default deeds (Namaz, Lie)
-   - If user accepts:
-     * Query default deeds (WHERE user_id = SYSTEM_USER_ID AND is_default = true AND name IN ('Namaz', 'Lie'))
-     * For each selected default deed:
-       - Create user_default_deeds record with is_active = true
-       - If deed has child deeds (parent_deed_id set), child deeds automatically available
-   - If user skips:
-     * No default deeds added (user can add them later)
-4. User can customize default deeds at any time (add/remove via user_default_deeds)
-5. User can create their own copy of default deeds (new deed row with their user_id)
+3. User can create their own deeds
+4. System initializes user's first day entry structure
 ```
 
 ### 2. Daily Entry Creation Flow
 ```
 1. User selects date and deed (can be parent or child deed)
 2. System validates:
-   - Deed exists and is accessible to user (default via user_default_deeds or owned)
+   - Deed exists and is owned by the user
    - Deed is not hidden from input (hide_type != 'hide_from_all')
    - User has permission (owner or friend/follower with write permission)
 3. If scale-based:
@@ -416,13 +409,14 @@ demerits (1) ────< (M) user_demerits
 7. **Daily Reflection Messages** (optional):
    - User can add/update daily_reflection_messages for the date
    - One hasanaat_message and/or one saiyyiaat_message per day
-8. **Achievement/Demerit Check** (background process):
-   - Evaluate achievement conditions based on entries of the day
-   - Evaluate demerit conditions based on entries of the day
-   - Create user_achievements or user_demerits records if conditions met
+8. **Merit/Demerit Evaluation** (background process):
+   - Evaluate merit conditions based on entries within the merit_duration window
+   - Check if all (AND) or any (OR) linked deeds satisfy their conditions
+   - Track positive merits (rewards) and negative merits (penalties)
+   - Create merit evaluation records if conditions met
 ```
 
-### 3. Custom Deed Creation Flow
+### 3. Deed Creation Flow
 ```
 1. User provides deed details (name, category, measure_type)
 2. If scale-based:
@@ -454,30 +448,54 @@ demerits (1) ────< (M) user_demerits
    - Sum/total for count-based
    - Hasanaat vs Saiyyiaat balance
    - Trend analysis (improvement/decline)
-   - Include user_achievements and user_demerits for the time range
+   - Include merit evaluations and target progress for the time range
 4. Return aggregated data for visualization
 ```
 
-### 5. Achievement/Demerit Evaluation Flow
+### 5. Merit/Demerit Evaluation Flow
 ```
 1. Trigger: After daily entry creation/update or scheduled daily check
-2. For each active achievement/demerit (user-specific or system-wide):
-   - Read condition_config JSONB
-   - Query relevant entries for the date
-   - Evaluate condition:
-     * 'all_sub_deeds': Check if all sub-deeds of deed meet condition
-     * 'specific_sub_deeds': Check if specified sub-deeds meet condition
-     * 'custom': Execute custom logic (application-level)
-3. If condition met:
-   - Create user_achievements or user_demerits record
+2. For each active merit (system-wide):
+   - Get merit_duration (evaluation window in days)
+   - Get merit_type (AND/OR logic) and merit_category (positive/negative)
+   - Query all merit_items for this merit
+3. For each merit_item:
+   - Determine deed type (count-based or scale-based)
+   - If count-based: Check if deed has required merit_items_count within the time window
+   - If scale-based: Check if deed has required scale_id value within the time window
+4. Apply merit_type logic:
+   - **AND**: All linked deeds must satisfy their rules
+   - **OR**: Any one linked deed satisfying its rule is enough
+5. If condition met:
+   - Create merit evaluation record
    - Notify user (optional)
-4. Example evaluations:
-   - "All prayers in mosque": Check if all Namaz sub-deeds have scale_value = 'prayed_in_mosque'
-   - "All prayers except Fajr in mosque": Check if Zuhr, Asr, Maghrib, Isha have scale_value = 'prayed_in_mosque'
-   - "All prayers late/not prayed": Check if all Namaz sub-deeds have scale_value IN ('late_prayed', 'not_prayed')
+6. Example evaluations:
+   - "Perfect Prayer Week" (AND, positive, 7 days): All 5 prayers must be on time for 7 consecutive days
+   - "Any Prayer Missed" (OR, negative, 1 day): If any prayer is missed in a day, demerit is earned
 ```
 
-### 6. Daily Reflection Messages Flow
+### 6. Target Progress Tracking Flow
+```
+1. Trigger: After daily entry creation/update or scheduled daily check
+2. For each active target for the user:
+   - Check if current date is within target's start_date and end_date range
+   - Get all target_items for this target
+3. For each target_item:
+   - Determine deed type (count-based or scale-based)
+   - If count-based: Check progress toward target_items_count
+   - If scale-based: Check if deed has required scale_id value
+4. Calculate overall target progress:
+   - Track progress for each target_item
+   - Display progress percentage and remaining requirements
+5. If target completed:
+   - Mark target as completed
+   - Notify user (optional)
+6. Example targets:
+   - "Pray 5 times daily for 30 days": 30-day target with 5 target_items (one per prayer)
+   - "Read Quran daily": 7-day target with count requirement
+```
+
+### 7. Daily Reflection Messages Flow
 ```
 1. User navigates to daily entry view for a date
 2. System checks for existing daily_reflection_messages for that date
@@ -488,7 +506,7 @@ demerits (1) ────< (M) user_demerits
 4. Save to daily_reflection_messages table (one record per user per day)
 ```
 
-### 7. Friend/Follow Access Flow
+### 8. Friend/Follow Access Flow
 ```
 1. Friend/follower navigates to user's entries
 2. System checks friend_relationships:
@@ -554,7 +572,6 @@ demerits (1) ────< (M) user_demerits
   - **Check Constraints**: 
     - Measure type consistency: `(measure_value IS NOT NULL AND count_value IS NULL) OR (count_value IS NOT NULL AND measure_value IS NULL)`
     - Self-reference prevention: `requester_user_id != receiver_user_id` in friend_relationships
-    - Default deed validation: If `is_default = true`, then `user_id = SYSTEM_USER_ID` (enforced via trigger)
   - **Foreign Key Constraints**: All foreign keys with appropriate CASCADE rules
   - **Unique Constraints**: 
     - `(user_id, deed_id, entry_date, edited_by_user_id)` on entries
@@ -566,21 +583,15 @@ demerits (1) ────< (M) user_demerits
     - Enforce 30-day revert window for friend/follower edits
     - Auto-update `updated_at` timestamps
 
-### 6. **Default Deeds Management**
-- **Strategy**: All deeds have `user_id NOT NULL` (uniform ownership model)
-- **SYSTEM_USER_ID**: Special system user created during database initialization
-  - Owns all default deeds (Namaz, Lie, etc.)
-  - `user_id = SYSTEM_USER_ID` AND `is_default = true` identifies default deeds
-  - Cannot be deleted or modified by regular users
-- **Custom Deeds**: Owned by creating user (`user_id = creating user's ID`)
-- **Assignment**: Optional during onboarding via `user_default_deeds` junction table (user chooses to accept or skip)
-- **Customization**: Users can add/remove default deeds at any time via `user_default_deeds` table
-- **User Customization**: Users can create their own copy of default deeds (new deed row with their user_id, parent_deed_id pointing to original)
+### 6. **Deeds Management**
+- **Strategy**: All deeds have `user_id NOT NULL` (owned by the creating user)
+- **Ownership**: Each deed is owned by the user who created it (`user_id = creating user's ID`)
+- **Creation**: Users create their own deeds (new deed row with their user_id)
 - **Benefits**: 
-  - Uniform handling (no NULL checks needed)
-  - Clear ownership model
-  - Easier permission management
+  - Simple ownership model
+  - Clear permission management
   - Consistent queries across all deeds
+  - Users have full control over their deeds
 
 ### 7. **Self-Referencing Deeds Structure**
 - **Strategy**: Single `deeds` table with `parent_deed_id` for unlimited nesting
@@ -618,21 +629,38 @@ demerits (1) ────< (M) user_demerits
 - **Indexing**: Consider full-text search index if search functionality needed
 - **Encoding**: UTF-8 to support multilingual content
 
-### 11. **Achievements and Demerits**
-- **Storage**: JSONB field (condition_config) for flexible condition rules
-- **Types**:
-  - System-wide: user_id = NULL (available to all users)
-  - Custom: user_id set (user-specific achievements/demerits)
+### 11. **Merits/Demerits System**
+- **Storage**: Separate tables for merits and merit_items (replaces JSONB-based approach)
+- **Time-Based Evaluation**: Each merit has `merit_duration` (number of days) defining the evaluation window
+- **Logical Rules**:
+  - **AND**: All linked deeds must satisfy their rules (merit_type = 'AND')
+  - **OR**: Any one linked deed satisfying its rule is enough (merit_type = 'OR')
+- **Categories**:
+  - **Positive**: Achievement-style rewards (merit_category = 'positive')
+  - **Negative**: Demerit-style penalties (merit_category = 'negative')
 - **Evaluation**:
   - Triggered after entry creation/update or scheduled daily check
-  - Application-level logic evaluates condition_config JSONB
-  - Creates user_achievements or user_demerits records when conditions met
+  - Evaluates entries within the merit_duration window
+  - Checks each merit_item condition (count or scale requirement)
+  - Applies AND/OR logic based on merit_type
 - **Examples**:
-  - All prayers in mosque (all_sub_deeds condition)
-  - All prayers except Fajr in mosque (specific_sub_deeds condition)
-  - All prayers late/not prayed (all_sub_deeds with multiple scale_values)
+  - "Perfect Prayer Week" (AND, positive, 7 days): All 5 prayers on time for 7 consecutive days
+  - "Any Prayer Missed" (OR, negative, 1 day): If any prayer is missed, demerit is earned
 
-### 12. **Friend/Follow Relationships and Permissions**
+### 12. **Targets System**
+- **Storage**: Separate tables for targets and target_items
+- **User-Defined Goals**: Each target is created by a user with start_date and end_date
+- **Time-Bounded**: Targets have explicit date ranges defining when they are active
+- **Multi-Deed Support**: Targets can span multiple deeds via target_items
+- **Progress Tracking**:
+  - Track progress for each target_item (count or scale requirement)
+  - Calculate overall target completion percentage
+  - Display remaining requirements
+- **Examples**:
+  - "Pray 5 times daily for 30 days": 30-day target with 5 target_items
+  - "Read Quran daily": 7-day target with count requirement
+
+### 13. **Friend/Follow Relationships and Permissions**
 - **Relationship Types**:
   - `friend`: Mutual friendship (requires acceptance)
   - `follow`: One-way following (approval optional)
@@ -670,8 +698,6 @@ ALTER TABLE entries ADD CONSTRAINT check_measure_type
 ALTER TABLE friend_relationships ADD CONSTRAINT check_no_self_reference
   CHECK (requester_user_id != receiver_user_id);
 
--- Deeds: Default deeds must be owned by SYSTEM_USER_ID
--- (Enforced via trigger, not constraint, for flexibility)
 ```
 
 ### Unique Constraints
@@ -695,13 +721,27 @@ CREATE UNIQUE INDEX idx_friend_deed_permissions_one_write
   ON friend_deed_permissions(deed_id, permission_type)
   WHERE permission_type = 'write' AND is_active = true;
 
--- User achievements: One achievement per user per achievement per day
-ALTER TABLE user_achievements ADD CONSTRAINT unique_user_achievement_per_day
-  UNIQUE (user_id, achievement_id, achieved_date);
+-- Merit items: Only one condition type per item (count or scale, not both)
+ALTER TABLE merit_items ADD CONSTRAINT check_merit_item_condition
+  CHECK (
+    (merit_items_count IS NOT NULL AND scale_id IS NULL) OR
+    (merit_items_count IS NULL AND scale_id IS NOT NULL)
+  );
 
--- User demerits: One demerit per user per demerit per day
-ALTER TABLE user_demerits ADD CONSTRAINT unique_user_demerit_per_day
-  UNIQUE (user_id, demerit_id, demerit_date);
+-- Target items: Only one condition type per item (count or scale, not both)
+ALTER TABLE target_items ADD CONSTRAINT check_target_item_condition
+  CHECK (
+    (target_items_count IS NOT NULL AND scale_id IS NULL) OR
+    (target_items_count IS NULL AND scale_id IS NOT NULL)
+  );
+
+-- Targets: End date must be after start date
+ALTER TABLE targets ADD CONSTRAINT check_target_date_range
+  CHECK (end_date >= start_date);
+
+-- Targets: One target per user per title per start date
+ALTER TABLE targets ADD CONSTRAINT unique_target_per_user
+  UNIQUE (user_id, title, start_date);
 ```
 
 ### Database Triggers
@@ -805,22 +845,6 @@ CREATE TRIGGER trigger_check_revert_window
   WHEN (OLD.edited_by_user_id IS NOT NULL)
   EXECUTE FUNCTION check_revert_window();
 
--- Trigger: Validate default deeds are owned by SYSTEM_USER_ID
-CREATE OR REPLACE FUNCTION validate_default_deed_ownership()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF NEW.is_default = true AND NEW.user_id != '00000000-0000-0000-0000-000000000000'::UUID THEN
-    RAISE EXCEPTION 'Default deeds must be owned by SYSTEM_USER_ID';
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_validate_default_deed_ownership
-  BEFORE INSERT OR UPDATE ON deeds
-  FOR EACH ROW
-  WHEN (NEW.is_default = true)
-  EXECUTE FUNCTION validate_default_deed_ownership();
 ```
 
 ---
@@ -844,7 +868,6 @@ CREATE INDEX idx_entries_date_range ON entries(entry_date) WHERE entry_date >= C
 
 -- Deed lookups
 CREATE INDEX idx_deeds_user_category ON deeds(user_id, category, is_active);
-CREATE INDEX idx_deeds_default ON deeds(is_default) WHERE is_default = true;
 CREATE INDEX idx_deeds_user_active ON deeds(user_id, is_active) WHERE is_active = true;
 
 -- Self-referencing deeds (parent-child relationships)
@@ -876,17 +899,20 @@ CREATE INDEX idx_daily_reflection_date ON daily_reflection_messages(reflection_d
 CREATE INDEX idx_daily_reflection_hasanaat_fts ON daily_reflection_messages USING gin(to_tsvector('english', hasanaat_message)) WHERE hasanaat_message IS NOT NULL;
 CREATE INDEX idx_daily_reflection_saiyyiaat_fts ON daily_reflection_messages USING gin(to_tsvector('english', saiyyiaat_message)) WHERE saiyyiaat_message IS NOT NULL;
 
--- Achievements and demerits
-CREATE INDEX idx_achievements_user ON achievements(user_id, is_active) WHERE user_id IS NOT NULL;
-CREATE INDEX idx_achievements_system ON achievements(is_active) WHERE user_id IS NULL;
-CREATE INDEX idx_demerits_user ON demerits(user_id, is_active) WHERE user_id IS NOT NULL;
-CREATE INDEX idx_demerits_system ON demerits(is_active) WHERE user_id IS NULL;
+-- Merits and merit items
+CREATE INDEX idx_merits_active ON merits(is_active) WHERE is_active = true;
+CREATE INDEX idx_merits_category ON merits(merit_category, is_active) WHERE is_active = true;
+CREATE INDEX idx_merit_items_merit ON merit_items(merit_id, deed_id);
+CREATE INDEX idx_merit_items_deed ON merit_items(deed_id);
+CREATE INDEX idx_merit_items_scale ON merit_items(scale_id) WHERE scale_id IS NOT NULL;
 
--- User achievements and demerits
-CREATE INDEX idx_user_achievements_user_date ON user_achievements(user_id, achieved_date DESC);
-CREATE INDEX idx_user_achievements_achievement ON user_achievements(achievement_id, achieved_date DESC);
-CREATE INDEX idx_user_demerits_user_date ON user_demerits(user_id, demerit_date DESC);
-CREATE INDEX idx_user_demerits_demerit ON user_demerits(demerit_id, demerit_date DESC);
+-- Targets and target items
+CREATE INDEX idx_targets_user ON targets(user_id, is_active) WHERE is_active = true;
+CREATE INDEX idx_targets_date_range ON targets(start_date, end_date) WHERE is_active = true;
+CREATE INDEX idx_targets_user_date ON targets(user_id, start_date DESC, end_date DESC);
+CREATE INDEX idx_target_items_target ON target_items(target_id, deed_id);
+CREATE INDEX idx_target_items_deed ON target_items(deed_id);
+CREATE INDEX idx_target_items_scale ON target_items(scale_id) WHERE scale_id IS NOT NULL;
 
 -- Hide type filtering (for analytics)
 CREATE INDEX idx_deeds_hide_type ON deeds(hide_type, is_active);
@@ -1038,11 +1064,11 @@ CREATE POLICY user_entries_policy ON entries
 #### **Application-Level Caching**
 - **Redis/Memcached**: 
   - User sessions
-  - Frequently accessed deeds (default deeds, user's custom deeds)
+  - Frequently accessed deeds
   - Friend relationship cache
   - Recent entries (last 7 days per user)
 - **Cache Invalidation**: 
-  - TTL-based for static data (default deeds)
+  - TTL-based for static data
   - Event-based for dynamic data (new entries, friend updates)
 
 #### **Database Query Caching**
@@ -1106,7 +1132,6 @@ CREATE POLICY user_entries_policy ON entries
 
 ### 2. **Data Migration**
 - **Initial Load**: 
-  - Bulk import scripts for default deeds
   - Seed data for testing/development
 - **User Data Import**: If users want to import historical data, provide import API with validation
 
@@ -1165,17 +1190,18 @@ This database architecture plan provides a robust, scalable foundation for Kitaa
 
 ✅ **Supports core functionality**: 
    - Daily logging with self-referencing deeds (unlimited nesting)
-   - Optional default deeds onboarding (user choice, all deeds have user_id)
+   - User-created deeds (all deeds have user_id)
    - Daily reflection messages (one Hasanaat, one Saiyyiaat per day)
-   - Custom deeds with flexible measurement systems
+   - Deeds with flexible measurement systems
    - Analytics with hide type filtering
-   - Achievements and demerits with conditional evaluation
+   - Merits/Demerits system with time-based evaluations (AND/OR logic, positive/negative categories)
+   - Targets system for user-defined, time-bounded goals
    - Social features: mutual friendship and one-way following with deed-level permissions
 
 ✅ **Ensures data integrity**: 
    - Constraints, relationships, validation rules
-   - Self-referencing deeds structure (simplified schema, 2 tables removed)
-   - Uniform ownership model (all deeds have user_id, defaults owned by SYSTEM_USER_ID)
+   - Self-referencing deeds structure (simplified schema)
+   - Ownership model (all deeds have user_id, owned by creating user)
    - Hide type management for conditional visibility
    - Unique constraints for daily reflection messages
    - Full edit history in entries table (no separate activity_logs)
@@ -1195,12 +1221,11 @@ This database architecture plan provides a robust, scalable foundation for Kitaa
 ✅ **Enables maintainability**: 
    - Clear schema, migration strategy, monitoring
 
-The design balances flexibility (custom deeds, scales, achievements/demerits, unlimited nesting) with structure (uniform ownership model, deed-level permissions, 30-day revert window) while maintaining performance and security standards required for a platform serving millions of users.
+The design balances flexibility (deeds, scales, merits/demerits with time-based evaluation, targets with multi-deed support, unlimited nesting) with structure (uniform ownership model, deed-level permissions, 30-day revert window) while maintaining performance and security standards required for a platform serving millions of users.
 
 **Key Simplifications**:
-- ✅ **2 tables removed**: `sub_deeds` and `sub_entry_values` eliminated
 - ✅ **Self-referencing deeds**: Unlimited nesting with `parent_deed_id`
-- ✅ **Uniform ownership**: All deeds have `user_id NOT NULL` (SYSTEM_USER_ID for defaults)
+- ✅ **Simple ownership**: All deeds have `user_id NOT NULL` (owned by creating user)
 - ✅ **Deed-level permissions**: Multiple read, one write per deed
 - ✅ **Full history**: Edit tracking in entries table (no separate activity_logs)
 - ✅ **Friend/Follow model**: Supports both mutual friendship and one-way following
@@ -1209,18 +1234,22 @@ The design balances flexibility (custom deeds, scales, achievements/demerits, un
 
 **Next Steps** (Implementation Phase):
 1. Set up PostgreSQL database instance
-2. Create SYSTEM_USER_ID (special system user for default deeds)
-3. Create initial schema with all tables and constraints (12 tables total)
-4. Implement default deeds seeding (owned by SYSTEM_USER_ID)
-5. Create database migration scripts
-6. Set up indexing and connection pooling
-7. Configure backup and replication
-8. Implement security policies (RLS, encryption)
-9. Set up monitoring and alerting
+2. Create initial schema with all tables and constraints (13 tables total)
+3. Create database migration scripts
+4. Set up indexing and connection pooling
+5. Configure backup and replication
+6. Implement security policies (RLS, encryption)
+7. Set up monitoring and alerting
 
 **Schema Summary**:
-- **Total Tables**: 12 (reduced from 14)
-- **Removed**: `sub_deeds`, `sub_entry_values`, `activity_logs`
-- **Added**: `friend_deed_permissions`
-- **Modified**: `deeds` (added `parent_deed_id`, `user_id NOT NULL`), `entries` (added `edited_by_user_id`), `friend_relationships` (added `relationship_type`)
+- **Total Tables**: 13
+- **Core Tables**: `users`, `deeds`, `entries`, `scale_definitions`, `daily_reflection_messages`
+- **Social Tables**: `friend_relationships`, `friend_deed_permissions`
+- **Evaluation Tables**: `merits`, `merit_items`, `targets`, `target_items`
+- **Key Features**: 
+  - Self-referencing deeds structure (unlimited nesting via `parent_deed_id`)
+  - Simple ownership model (all deeds have `user_id NOT NULL`, owned by creating user)
+  - Time-based merit evaluation with AND/OR logic
+  - User-defined targets with date ranges
+  - Deed-level permissions for friends/followers
 
