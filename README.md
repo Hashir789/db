@@ -106,8 +106,11 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Full history maintained in entries table (no separate activity_logs)
 
 #### 4. **Scale_Definitions**
-- Defines custom scales for scale-based deeds
+- Defines custom scales for scale-based deeds with versioning support
 - Example: Excellent, Good, Average, Poor
+- Supports soft versioning: old scale values are preserved when updated
+- Historical entries maintain references to inactive scale values
+- Only active scale values appear in new input options
 
 #### 5. **Friend_Relationships**
 - Manages mutual friendship and one-way following
@@ -196,14 +199,29 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 #### **scale_definitions**
 ```sql
 - scale_id (UUID, Primary Key)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE)
+- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
 - scale_value (VARCHAR, Not Null)  -- e.g., "Yes", "No", "Excellent", "Good"
 - numeric_value (INTEGER, Nullable)  -- For ordering/analytics (e.g., Yes=1, No=0)
 - display_order (INTEGER, Not Null)
-- is_active (BOOLEAN, Default: true)
+- is_active (BOOLEAN, Default: true, Indexed)
+- created_at (TIMESTAMP, Not Null, Default: CURRENT_TIMESTAMP, Indexed)
+- deactivated_at (TIMESTAMP, Nullable)  -- When this scale value was deactivated
+- version (INTEGER, Not Null, Default: 1)  -- Version number for this scale value
 ```
 
-**Usage**: For scale-based deeds. Stores possible scale values and their ordering.
+**Usage**: For scale-based deeds. Stores possible scale values and their ordering with versioning support.
+
+**Versioning Behavior**:
+- When scale values are updated for a deed, old values are preserved with `is_active = false` and `deactivated_at` set
+- New scale values are created with `is_active = true` and incremented `version`
+- Historical entries continue to reference old inactive scale values correctly
+- Only active scale values (`is_active = true`) appear in new input options
+- Prevents duplicate active scale values per deed via unique constraint
+
+**Constraints**:
+- Unique constraint on `(deed_id, scale_value, is_active)` where `is_active = true` - prevents duplicate active scales
+- `deactivated_at` must be NULL when `is_active = true`
+- `deactivated_at` must be set when `is_active = false` (enforced via trigger)
 
 #### **entries**
 ```sql
@@ -225,10 +243,13 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 **Constraints**:
 - **Check Constraint**: `(measure_value IS NOT NULL AND count_value IS NULL) OR (count_value IS NOT NULL AND measure_value IS NULL)` - ensures measure type consistency
 - **Check Constraint**: `measure_value` must exist in `scale_definitions` for the deed (if scale-based) - enforced via trigger
+  - For new entries: Only active scale values are allowed
+  - For existing entries: Historical inactive scale values are allowed if entry was created when scale was active
 - **Unique Constraint**: `(user_id, deed_id, entry_date, edited_by_user_id)` - one entry per user per deed per date per editor
 - **Revert Window Constraint**: Friend/follower edits can only be reverted within 30 days (enforced via trigger/application logic)
 - **Entry Rule**: Entries are created directly for the deed being tracked (parent or child)
 - **History**: Full edit history maintained in entries table (no separate activity_logs needed)
+- **Scale Versioning**: Historical entries preserve references to inactive scale values for data integrity
 
 
 #### **friend_relationships**
@@ -312,6 +333,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 **Constraints**:
 - Check constraint: Only one of `merit_items_count` or `scale_id` can be set (not both, not neither)
 - **Logic**: Only one condition type per item - count-based deeds use `merit_items_count`, scale-based deeds use `scale_id`
+- **Scale Versioning**: `scale_id` references a specific scale definition. If the scale is later deactivated, the merit_item continues to reference it correctly (historical integrity preserved)
 
 **Usage**: Defines conditions for each merit. Each item belongs to exactly one deed and specifies either a count requirement or a scale requirement.
 
@@ -347,6 +369,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 **Constraints**:
 - Check constraint: Only one of `target_items_count` or `scale_id` can be set (not both, not neither)
 - **Logic**: Only one condition type per item - count-based deeds use `target_items_count`, scale-based deeds use `scale_id`
+- **Scale Versioning**: `scale_id` references a specific scale definition. If the scale is later deactivated, the target_item continues to reference it correctly (historical integrity preserved)
 
 **Usage**: Defines conditions for each target. Each item belongs to exactly one deed and specifies either a count requirement or a scale requirement.
 
@@ -421,7 +444,11 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
 1. User provides deed details (name, category, measure_type)
 2. If scale-based:
    - User defines scale values
-   - Create scale_definitions records
+   - Create scale_definitions records with:
+     * is_active = true
+     * created_at = CURRENT_TIMESTAMP
+     * deactivated_at = NULL
+     * version = 1
 3. If count-based:
    - No scale_definitions needed
 4. Optionally create child deeds (sub-deeds):
@@ -430,6 +457,26 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
    - Supports unlimited nesting
 5. Create deed record with user_id (NOT NULL)
 6. Deed now available for logging
+```
+
+### 3a. Scale Values Update Flow (Versioning)
+```
+1. User updates scale values for an existing scale-based deed
+2. System preserves existing scale values:
+   - Set is_active = false for old scale values
+   - Set deactivated_at = CURRENT_TIMESTAMP for old scale values
+   - Keep old scale values in database (for historical entries)
+3. System creates new scale values:
+   - Create new scale_definitions records with:
+     * is_active = true
+     * created_at = CURRENT_TIMESTAMP
+     * deactivated_at = NULL
+     * version = MAX(version) + 1 for this deed
+4. Historical entries remain valid:
+   - Old entries continue to reference inactive scale values
+   - Validation allows inactive scales if entry was created before deactivation
+5. New entries can only use active scale values
+6. Analytics can query across all versions or filter by active status
 ```
 
 ### 4. Analytics Query Flow
@@ -622,14 +669,38 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
   - Analytics queries: Exclude items with hide_type = 'hide_from_all' or 'hide_from_graphs' based on context
   - Dynamic updates: hide_type can be updated based on conditions (e.g., date-based logic for Ramadan Fasts)
 
-### 10. **Daily Reflection Messages**
+### 10. **Scale Definitions Versioning**
+- **Storage**: Versioning fields in `scale_definitions` table (`is_active`, `created_at`, `deactivated_at`, `version`)
+- **Versioning Strategy**: Soft versioning with historical preservation
+  - When scale values are updated, old values are marked `is_active = false` and `deactivated_at` is set
+  - New scale values are created with `is_active = true` and incremented `version`
+  - Historical entries preserve references to inactive scale values
+- **Data Integrity**:
+  - Unique constraint prevents duplicate active scale values per deed
+  - Validation trigger ensures new entries only use active scales
+  - Historical entries can reference inactive scales if they were active when entry was created
+- **Query Performance**:
+  - Index on `(deed_id, is_active)` for filtering active scales
+  - Index on `(deed_id, scale_value)` for lookups
+  - Partial unique index on active scales only
+- **Usage**:
+  - Application queries filter by `is_active = true` for input forms
+  - Historical queries include inactive scales for data integrity
+  - Analytics can aggregate across all versions or filter by active status
+- **Benefits**:
+  - Preserves historical data integrity
+  - Allows scale evolution without breaking old entries
+  - Maintains referential integrity for analytics
+  - Supports audit trails of scale changes
+
+### 11. **Daily Reflection Messages**
 - **Storage**: Two TEXT fields in `daily_reflection_messages` table (hasanaat_message, saiyyiaat_message)
 - **Constraint**: One record per user per day (unique constraint on user_id, reflection_date)
 - **Usage**: One optional message for all hasanaat deeds of the day, one optional message for all saiyyiaat deeds of the day
 - **Indexing**: Consider full-text search index if search functionality needed
 - **Encoding**: UTF-8 to support multilingual content
 
-### 11. **Merits/Demerits System**
+### 12. **Merits/Demerits System**
 - **Storage**: Separate tables for merits and merit_items (replaces JSONB-based approach)
 - **Time-Based Evaluation**: Each merit has `merit_duration` (number of days) defining the evaluation window
 - **Logical Rules**:
@@ -647,7 +718,7 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
   - "Perfect Prayer Week" (AND, positive, 7 days): All 5 prayers on time for 7 consecutive days
   - "Any Prayer Missed" (OR, negative, 1 day): If any prayer is missed, demerit is earned
 
-### 12. **Targets System**
+### 13. **Targets System**
 - **Storage**: Separate tables for targets and target_items
 - **User-Defined Goals**: Each target is created by a user with start_date and end_date
 - **Time-Bounded**: Targets have explicit date ranges defining when they are active
@@ -660,7 +731,7 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
   - "Pray 5 times daily for 30 days": 30-day target with 5 target_items
   - "Read Quran daily": 7-day target with count requirement
 
-### 13. **Friend/Follow Relationships and Permissions**
+### 14. **Friend/Follow Relationships and Permissions**
 - **Relationship Types**:
   - `friend`: Mutual friendship (requires acceptance)
   - `follow`: One-way following (approval optional)
@@ -698,6 +769,13 @@ ALTER TABLE entries ADD CONSTRAINT check_measure_type
 ALTER TABLE friend_relationships ADD CONSTRAINT check_no_self_reference
   CHECK (requester_user_id != receiver_user_id);
 
+-- Scale definitions: deactivated_at must be NULL when active, set when inactive
+ALTER TABLE scale_definitions ADD CONSTRAINT check_scale_deactivation
+  CHECK (
+    (is_active = true AND deactivated_at IS NULL) OR
+    (is_active = false AND deactivated_at IS NOT NULL)
+  );
+
 ```
 
 ### Unique Constraints
@@ -728,6 +806,11 @@ ALTER TABLE merit_items ADD CONSTRAINT check_merit_item_condition
     (merit_items_count IS NULL AND scale_id IS NOT NULL)
   );
 
+-- Scale definitions: Prevent duplicate active scale values per deed
+CREATE UNIQUE INDEX idx_scale_definitions_unique_active
+  ON scale_definitions(deed_id, scale_value)
+  WHERE is_active = true;
+
 -- Target items: Only one condition type per item (count or scale, not both)
 ALTER TABLE target_items ADD CONSTRAINT check_target_item_condition
   CHECK (
@@ -748,19 +831,63 @@ ALTER TABLE targets ADD CONSTRAINT unique_target_per_user
 
 ```sql
 -- Trigger: Validate measure_value exists in scale_definitions
+-- Allows active scales for new entries, and historical inactive scales for existing entries
 CREATE OR REPLACE FUNCTION validate_measure_value()
 RETURNS TRIGGER AS $$
+DECLARE
+  scale_exists BOOLEAN;
+  scale_was_active BOOLEAN;
 BEGIN
   IF NEW.measure_value IS NOT NULL THEN
-    IF NOT EXISTS (
+    -- Check if scale exists (active or inactive)
+    SELECT EXISTS (
       SELECT 1 FROM scale_definitions sd
-      JOIN deeds d ON sd.deed_id = d.deed_id
-      WHERE d.deed_id = NEW.deed_id
+      WHERE sd.deed_id = NEW.deed_id
         AND sd.scale_value = NEW.measure_value
-        AND sd.is_active = true
-    ) THEN
+    ) INTO scale_exists;
+    
+    IF NOT scale_exists THEN
       RAISE EXCEPTION 'measure_value % does not exist in scale_definitions for deed %', 
         NEW.measure_value, NEW.deed_id;
+    END IF;
+    
+    -- For new entries (INSERT), only allow active scales
+    IF TG_OP = 'INSERT' THEN
+      SELECT EXISTS (
+        SELECT 1 FROM scale_definitions sd
+        WHERE sd.deed_id = NEW.deed_id
+          AND sd.scale_value = NEW.measure_value
+          AND sd.is_active = true
+      ) INTO scale_was_active;
+      
+      IF NOT scale_was_active THEN
+        RAISE EXCEPTION 'measure_value % is not active for deed %. Only active scale values can be used for new entries.', 
+          NEW.measure_value, NEW.deed_id;
+      END IF;
+    END IF;
+    
+    -- For updates, allow if:
+    -- 1. Scale is currently active, OR
+    -- 2. Scale was active when the original entry was created (preserve historical data)
+    IF TG_OP = 'UPDATE' THEN
+      SELECT EXISTS (
+        SELECT 1 FROM scale_definitions sd
+        WHERE sd.deed_id = NEW.deed_id
+          AND sd.scale_value = NEW.measure_value
+          AND (
+            sd.is_active = true
+            OR (
+              sd.is_active = false
+              AND sd.deactivated_at IS NOT NULL
+              AND OLD.created_at <= sd.deactivated_at
+            )
+          )
+      ) INTO scale_was_active;
+      
+      IF NOT scale_was_active THEN
+        RAISE EXCEPTION 'measure_value % is not valid for deed %. Cannot update to an inactive scale that was not active when entry was created.', 
+          NEW.measure_value, NEW.deed_id;
+      END IF;
     END IF;
   END IF;
   RETURN NEW;
@@ -772,6 +899,30 @@ CREATE TRIGGER trigger_validate_measure_value
   FOR EACH ROW
   WHEN (NEW.measure_value IS NOT NULL)
   EXECUTE FUNCTION validate_measure_value();
+
+-- Trigger: Automatically set deactivated_at when scale is deactivated
+CREATE OR REPLACE FUNCTION set_scale_deactivated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- When is_active changes from true to false, set deactivated_at
+  IF OLD.is_active = true AND NEW.is_active = false THEN
+    NEW.deactivated_at = CURRENT_TIMESTAMP;
+  END IF;
+  
+  -- When is_active is set to true, ensure deactivated_at is NULL
+  IF NEW.is_active = true THEN
+    NEW.deactivated_at = NULL;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_set_scale_deactivated_at
+  BEFORE UPDATE ON scale_definitions
+  FOR EACH ROW
+  WHEN (OLD.is_active IS DISTINCT FROM NEW.is_active)
+  EXECUTE FUNCTION set_scale_deactivated_at();
 
 -- Trigger: Validate child deeds inherit measure_type from parent
 CREATE OR REPLACE FUNCTION validate_child_measure_type()
@@ -889,8 +1040,11 @@ CREATE INDEX idx_friend_deed_permissions_write ON friend_deed_permissions(deed_i
 CREATE INDEX idx_entries_edited_by ON entries(edited_by_user_id, entry_date DESC) WHERE edited_by_user_id IS NOT NULL;
 CREATE INDEX idx_entries_user_date_edited ON entries(user_id, entry_date, edited_by_user_id);
 
--- Scale definitions (for validation)
+-- Scale definitions (for validation and versioning)
 CREATE INDEX idx_scale_definitions_deed ON scale_definitions(deed_id, is_active);
+CREATE INDEX idx_scale_definitions_deed_value ON scale_definitions(deed_id, scale_value);
+CREATE INDEX idx_scale_definitions_active ON scale_definitions(deed_id, is_active) WHERE is_active = true;
+CREATE INDEX idx_scale_definitions_deactivated ON scale_definitions(deed_id, deactivated_at) WHERE is_active = false;
 
 -- Daily reflection messages
 CREATE INDEX idx_daily_reflection_user_date ON daily_reflection_messages(user_id, reflection_date DESC);
