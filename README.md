@@ -20,8 +20,8 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 
 - **Dual deed categories**: Hasanaat and Saiyyiaat
 - **Flexible measurement systems**: Scale-based (Yes/No, custom scales) and count-based
-- **Hierarchical structures**: Self-referencing deeds with unlimited nesting (parent_deed_id)
-- **Entry rules**: Entries are created directly for the deed being tracked (parent or child)
+- **Hierarchical structures**: Deed items with level-based nesting
+- **Entry rules**: Entries are created directly for the deed item being tracked
 - **Daily logging**: Chronological entries with daily reflection messages (one Hasanaat message, one Saiyyiaat message per day)
 - **Time-range analytics**: Daily, weekly, monthly, yearly, and custom date ranges
 - **Hide functionality**: Two types - hide from input forms and graphs, or hide from graphs only
@@ -91,21 +91,24 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - Primary entity representing platform users
 - Stores authentication and profile information
 
-#### 2. **Deeds**
-- Represents all deeds in the system (owned by users)
-- Self-referencing structure: `parent_deed_id` allows unlimited nesting
-- Categorized as Hasanaat or Saiyyiaat
-- Contains measure type and scale definitions
+#### 2. **Deed**
+- Represents deed definitions (owned by users)
+- Contains category type (Hasanaat/Saiyyiaat) and measure type (scale/count)
 - All deeds have `user_id NOT NULL` (owned by the creating user)
 
-#### 3. **Entries**
-- Daily logging records for deeds (parent or child)
-- Links user, deed, and date
+#### 3. **Deed_Items**
+- Represents deed items/sub-deeds that belong to a deed
+- Contains name, description, level, hide_type, and display_order
+- References parent deed via `deed_id`
+
+#### 4. **Entries**
+- Daily logging records for deed items
+- Links user, deed_item, and date
 - Stores measurement values
 - Tracks friend/follower edits via `edited_by_user_id`
 - Full history maintained in entries table (no separate activity_logs)
 
-#### 4. **Scale_Definitions**
+#### 5. **Scale_Definitions**
 - Defines custom scales for scale-based deeds with versioning support
 - Example: Excellent, Good, Average, Poor
 - Supports soft versioning: old scale values are preserved when updated
@@ -149,6 +152,25 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 
 ## Database Schema Design
 
+### Tables Overview
+
+| # | Table Name | Primary Purpose | Key Fields Count |
+|---|-----------|----------------|------------------|
+| 1 | `users` | User accounts and authentication | 9 fields |
+| 2 | `deed` | Deed definitions (Hasanaat/Saiyyiaat) | 4 fields |
+| 3 | `deed_items` | Deed items/sub-deeds | 8 fields |
+| 4 | `scale_definitions` | Scale values for scale-based deeds with versioning | 9 fields |
+| 5 | `entries` | Daily logging records for deeds | 8 fields |
+| 6 | `friend_relationships` | Friend and follow relationships between users | 7 fields |
+| 7 | `friend_deed_permissions` | Deed-level permissions for friends/followers | 6 fields |
+| 8 | `daily_reflection_messages` | Daily reflection messages (Hasanaat/Saiyyiaat) | 6 fields |
+| 9 | `merits` | Time-based evaluation rules (positive/negative) | 8 fields |
+| 10 | `merit_items` | Conditions for each merit tied to specific deeds | 5 fields |
+| 11 | `targets` | User-defined, time-bounded goals | 8 fields |
+| 12 | `target_items` | Conditions for each target tied to specific deeds | 5 fields |
+
+**Total Tables**: 12
+
 ### Table Specifications
 
 #### **users**
@@ -165,41 +187,49 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - timezone (VARCHAR, Default: 'UTC')
 ```
 
-#### **deeds**
+#### **deed**
 ```sql
 - deed_id (UUID, Primary Key)
 - user_id (UUID, Foreign Key → users.user_id, Not Null, Indexed)
   -- Owner of the deed (the user who created it)
-- parent_deed_id (UUID, Foreign Key → deeds.deed_id, Nullable, Indexed)
-  -- NULL for main deeds, set for child deeds (sub-deeds)
-  -- Enables unlimited nesting
-  -- Self-referencing foreign key
+- category_type (ENUM: 'hasanaat', 'saiyyiaat', Not Null, Indexed)
+- measure_type (ENUM: 'scale', 'count', Not Null)
+```
+
+**Notes**: 
+- All deeds have `user_id NOT NULL` (owned by the creating user)
+- Defines the deed category and measurement type
+- Deed items belong to a deed via `deed_id` foreign key
+
+#### **deed_items**
+```sql
+- deed_item_id (UUID, Primary Key)
+- deed_id (UUID, Foreign Key → deed.deed_id, ON DELETE CASCADE, Not Null, Indexed)
+  -- The deed this item belongs to
 - name (VARCHAR, Not Null)
 - description (TEXT, Nullable)
-- category (ENUM: 'hasanaat', 'saiyyiaat', Not Null, Indexed)
-- measure_type (ENUM: 'scale_based', 'count_based', Not Null)
-  -- Child deeds inherit this from parent (enforced via trigger)
-- is_active (BOOLEAN, Default: true)
+- level (INTEGER, Not Null, Default: 0)
+  -- Level/nesting depth of the item
 - hide_type (ENUM: 'none', 'hide_from_all', 'hide_from_graphs', Default: 'none')
   -- 'hide_from_all': Hidden from input forms and graphs
   -- 'hide_from_graphs': Visible in input forms but hidden in graphs only
   -- 'none': Visible everywhere
 - display_order (INTEGER, Default: 0)
+- is_active (BOOLEAN, Default: true)
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
 ```
 
 **Notes**: 
-- All deeds have `user_id NOT NULL` (owned by the creating user)
-- Self-referencing structure: `parent_deed_id` allows unlimited nesting
-- Child deeds inherit `measure_type` from parent deed
-- No separate `sub_deeds` table needed
+- Deed items belong to a deed and represent sub-deeds/items
+- `level` indicates nesting depth (0 for top-level items)
+- All items inherit `category_type` and `measure_type` from parent deed
 
 
 #### **scale_definitions**
 ```sql
 - scale_id (UUID, Primary Key)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- deed_id (UUID, Foreign Key → deed.deed_id, ON DELETE CASCADE, Indexed)
 - scale_value (VARCHAR, Not Null)  -- e.g., "Yes", "No", "Excellent", "Good"
 - numeric_value (INTEGER, Nullable)  -- For ordering/analytics (e.g., Yes=1, No=0)
 - display_order (INTEGER, Not Null)
@@ -228,8 +258,8 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - entry_id (UUID, Primary Key)
 - user_id (UUID, Foreign Key → users.user_id, ON DELETE CASCADE, Indexed)
   -- Owner of the entry (deed owner)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
-  -- Can be parent or child deed
+- deed_item_id (UUID, Foreign Key → deed_items.deed_item_id, ON DELETE CASCADE, Indexed)
+  -- The deed item being tracked
 - entry_date (DATE, Not Null, Indexed)
 - measure_value (VARCHAR, Nullable)  -- For scale-based: stores scale_value
 - count_value (INTEGER, Nullable)  -- For count-based: stores numeric count
@@ -245,9 +275,9 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 - **Check Constraint**: `measure_value` must exist in `scale_definitions` for the deed (if scale-based) - enforced via trigger
   - For new entries: Only active scale values are allowed
   - For existing entries: Historical inactive scale values are allowed if entry was created when scale was active
-- **Unique Constraint**: `(user_id, deed_id, entry_date, edited_by_user_id)` - one entry per user per deed per date per editor
+- **Unique Constraint**: `(user_id, deed_item_id, entry_date, edited_by_user_id)` - one entry per user per deed item per date per editor
 - **Revert Window Constraint**: Friend/follower edits can only be reverted within 30 days (enforced via trigger/application logic)
-- **Entry Rule**: Entries are created directly for the deed being tracked (parent or child)
+- **Entry Rule**: Entries are created directly for the deed item being tracked
 - **History**: Full edit history maintained in entries table (no separate activity_logs needed)
 - **Scale Versioning**: Historical entries preserve references to inactive scale values for data integrity
 
@@ -275,7 +305,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```sql
 - permission_id (UUID, Primary Key)
 - relationship_id (UUID, Foreign Key → friend_relationships.relationship_id, ON DELETE CASCADE, Indexed)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- deed_id (UUID, Foreign Key → deed.deed_id, ON DELETE CASCADE, Indexed)
 - permission_type (ENUM: 'read', 'write', Not Null)
 - is_active (BOOLEAN, Default: true)
 - created_at (TIMESTAMP)
@@ -324,7 +354,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```sql
 - merit_item_id (UUID, Primary Key)
 - merit_id (UUID, Foreign Key → merits.merit_id, ON DELETE CASCADE, Indexed)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- deed_item_id (UUID, Foreign Key → deed_items.deed_item_id, ON DELETE CASCADE, Indexed)
 - merit_items_count (INTEGER, Nullable)  -- Required number of times (only for count-type deeds)
 - scale_id (UUID, Foreign Key → scale_definitions.scale_id, Nullable)  -- Required scale value (only for scale-type deeds)
 - created_at (TIMESTAMP)
@@ -360,7 +390,7 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ```sql
 - target_item_id (UUID, Primary Key)
 - target_id (UUID, Foreign Key → targets.target_id, ON DELETE CASCADE, Indexed)
-- deed_id (UUID, Foreign Key → deeds.deed_id, ON DELETE CASCADE, Indexed)
+- deed_item_id (UUID, Foreign Key → deed_items.deed_item_id, ON DELETE CASCADE, Indexed)
 - target_items_count (INTEGER, Nullable)  -- Required count (if count-based)
 - scale_id (UUID, Foreign Key → scale_definitions.scale_id, Nullable)  -- Required scale (if scale-based)
 - created_at (TIMESTAMP)
@@ -376,19 +406,20 @@ Kitaab is a spiritual self-accountability platform that allows Muslims to track 
 ### Relationships Summary
 
 ```
-users (1) ────< (M) deeds
+users (1) ────< (M) deed
 users (1) ────< (M) entries
 users (1) ────< (M) friend_relationships (as requester)
 users (1) ────< (M) friend_relationships (as receiver)
 users (1) ────< (M) daily_reflection_messages
 users (1) ────< (M) targets (user-defined goals)
 
-deeds (1) ────< (M) deeds (self-referencing: parent_deed_id)
-deeds (1) ────< (M) scale_definitions
-deeds (1) ────< (M) entries
-deeds (1) ────< (M) friend_deed_permissions
-deeds (1) ────< (M) merit_items (conditions for merits)
-deeds (1) ────< (M) target_items (conditions for targets)
+deed (1) ────< (M) deed_items
+deed (1) ────< (M) scale_definitions
+deed (1) ────< (M) friend_deed_permissions
+
+deed_items (1) ────< (M) entries
+deed_items (1) ────< (M) merit_items (conditions for merits)
+deed_items (1) ────< (M) target_items (conditions for targets)
 
 friend_relationships (1) ────< (M) friend_deed_permissions
 
@@ -415,7 +446,7 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
 ```
 1. User selects date and deed (can be parent or child deed)
 2. System validates:
-   - Deed exists and is owned by the user
+   - Deed item exists and belongs to a deed owned by the user
    - Deed is not hidden from input (hide_type != 'hide_from_all')
    - User has permission (owner or friend/follower with write permission)
 3. If scale-based:
@@ -441,22 +472,25 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
 
 ### 3. Deed Creation Flow
 ```
-1. User provides deed details (name, category, measure_type)
-2. If scale-based:
+1. User creates a deed:
+   - Provide category_type (hasanaat/saiyyiaat)
+   - Provide measure_type (scale/count)
+   - Create deed record with user_id (NOT NULL)
+2. User creates deed items:
+   - Add name, description
+   - Set level (0 for top-level items)
+   - Set hide_type and display_order
+   - Create deed_items records linked to deed_id
+3. If scale-based:
    - User defines scale values
-   - Create scale_definitions records with:
+   - Create scale_definitions records linked to deed_id with:
      * is_active = true
      * created_at = CURRENT_TIMESTAMP
      * deactivated_at = NULL
      * version = 1
-3. If count-based:
+4. If count-based:
    - No scale_definitions needed
-4. Optionally create child deeds (sub-deeds):
-   - Set parent_deed_id to parent deed_id
-   - Child deeds inherit measure_type from parent
-   - Supports unlimited nesting
-5. Create deed record with user_id (NOT NULL)
-6. Deed now available for logging
+5. Deed and items now available for logging
 ```
 
 ### 3a. Scale Values Update Flow (Versioning)
@@ -488,7 +522,7 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
    - **Filter out hidden items**:
      * Exclude deeds/sub-deeds where hide_type = 'hide_from_all' (from all views)
      * Exclude deeds/sub-deeds where hide_type = 'hide_from_graphs' (from graphs only)
-   - Aggregate by deed_id, sub_deed_id
+   - Aggregate by deed_id, deed_item_id
 3. Calculate metrics:
    - Total entries per deed (respecting hide_type rules)
    - Average/trend for scale-based (using numeric_value from scale_definitions)
@@ -630,13 +664,15 @@ scale_definitions (1) ────< (M) target_items (scale requirements)
     - Enforce 30-day revert window for friend/follower edits
     - Auto-update `updated_at` timestamps
 
-### 6. **Deeds Management**
+### 6. **Deed Management**
 - **Strategy**: All deeds have `user_id NOT NULL` (owned by the creating user)
+- **Structure**: Deed contains category_type and measure_type; deed_items contain the actual items/sub-deeds
 - **Ownership**: Each deed is owned by the user who created it (`user_id = creating user's ID`)
-- **Creation**: Users create their own deeds (new deed row with their user_id)
+- **Creation**: Users create their own deeds and deed items
 - **Benefits**: 
   - Simple ownership model
-  - Clear permission management
+  - Clear separation between deed definition and items
+  - Level-based nesting via `level` field
   - Consistent queries across all deeds
   - Users have full control over their deeds
 
@@ -842,27 +878,29 @@ BEGIN
     -- Check if scale exists (active or inactive)
     SELECT EXISTS (
       SELECT 1 FROM scale_definitions sd
-      WHERE sd.deed_id = NEW.deed_id
+      JOIN deed_items di ON sd.deed_id = di.deed_id
+      WHERE di.deed_item_id = NEW.deed_item_id
         AND sd.scale_value = NEW.measure_value
     ) INTO scale_exists;
     
     IF NOT scale_exists THEN
-      RAISE EXCEPTION 'measure_value % does not exist in scale_definitions for deed %', 
-        NEW.measure_value, NEW.deed_id;
+      RAISE EXCEPTION 'measure_value % does not exist in scale_definitions for deed_item %', 
+        NEW.measure_value, NEW.deed_item_id;
     END IF;
     
     -- For new entries (INSERT), only allow active scales
     IF TG_OP = 'INSERT' THEN
       SELECT EXISTS (
         SELECT 1 FROM scale_definitions sd
-        WHERE sd.deed_id = NEW.deed_id
+        JOIN deed_items di ON sd.deed_id = di.deed_id
+        WHERE di.deed_item_id = NEW.deed_item_id
           AND sd.scale_value = NEW.measure_value
           AND sd.is_active = true
       ) INTO scale_was_active;
       
       IF NOT scale_was_active THEN
-        RAISE EXCEPTION 'measure_value % is not active for deed %. Only active scale values can be used for new entries.', 
-          NEW.measure_value, NEW.deed_id;
+        RAISE EXCEPTION 'measure_value % is not active for deed_item %. Only active scale values can be used for new entries.', 
+          NEW.measure_value, NEW.deed_item_id;
       END IF;
     END IF;
     
@@ -872,7 +910,8 @@ BEGIN
     IF TG_OP = 'UPDATE' THEN
       SELECT EXISTS (
         SELECT 1 FROM scale_definitions sd
-        WHERE sd.deed_id = NEW.deed_id
+        JOIN deed_items di ON sd.deed_id = di.deed_id
+        WHERE di.deed_item_id = NEW.deed_item_id
           AND sd.scale_value = NEW.measure_value
           AND (
             sd.is_active = true
@@ -885,8 +924,8 @@ BEGIN
       ) INTO scale_was_active;
       
       IF NOT scale_was_active THEN
-        RAISE EXCEPTION 'measure_value % is not valid for deed %. Cannot update to an inactive scale that was not active when entry was created.', 
-          NEW.measure_value, NEW.deed_id;
+        RAISE EXCEPTION 'measure_value % is not valid for deed_item %. Cannot update to an inactive scale that was not active when entry was created.', 
+          NEW.measure_value, NEW.deed_item_id;
       END IF;
     END IF;
   END IF;
@@ -924,31 +963,26 @@ CREATE TRIGGER trigger_set_scale_deactivated_at
   WHEN (OLD.is_active IS DISTINCT FROM NEW.is_active)
   EXECUTE FUNCTION set_scale_deactivated_at();
 
--- Trigger: Validate child deeds inherit measure_type from parent
-CREATE OR REPLACE FUNCTION validate_child_measure_type()
+-- Trigger: Validate deed items inherit measure_type from parent deed
+CREATE OR REPLACE FUNCTION validate_deed_item_measure_type()
 RETURNS TRIGGER AS $$
 DECLARE
   parent_measure_type VARCHAR;
 BEGIN
-  IF NEW.parent_deed_id IS NOT NULL THEN
     SELECT measure_type INTO parent_measure_type
-    FROM deeds
-    WHERE deed_id = NEW.parent_deed_id;
-    
-    IF NEW.measure_type != parent_measure_type THEN
-      RAISE EXCEPTION 'Child deed measure_type (%) must match parent measure_type (%)', 
-        NEW.measure_type, parent_measure_type;
-    END IF;
-  END IF;
+  FROM deed
+  WHERE deed_id = NEW.deed_id;
+  
+  -- Deed items inherit measure_type from parent deed (enforced at application level)
+  -- This trigger ensures consistency
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trigger_validate_child_measure_type
-  BEFORE INSERT OR UPDATE ON deeds
+CREATE TRIGGER trigger_validate_deed_item_measure_type
+  BEFORE INSERT OR UPDATE ON deed_items
   FOR EACH ROW
-  WHEN (NEW.parent_deed_id IS NOT NULL)
-  EXECUTE FUNCTION validate_child_measure_type();
+  EXECUTE FUNCTION validate_deed_item_measure_type();
 
 -- Trigger: Auto-update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -1013,18 +1047,18 @@ CREATE INDEX idx_users_is_active ON users(is_active) WHERE is_active = true;
 
 -- Entry queries (most frequent operations)
 CREATE INDEX idx_entries_user_date ON entries(user_id, entry_date DESC);
-CREATE INDEX idx_entries_deed_date ON entries(deed_id, entry_date DESC);
-CREATE INDEX idx_entries_user_deed_date ON entries(user_id, deed_id, entry_date);
+CREATE INDEX idx_entries_deed_item_date ON entries(deed_item_id, entry_date DESC);
+CREATE INDEX idx_entries_user_deed_item_date ON entries(user_id, deed_item_id, entry_date);
 CREATE INDEX idx_entries_date_range ON entries(entry_date) WHERE entry_date >= CURRENT_DATE - INTERVAL '1 year';
 
 -- Deed lookups
-CREATE INDEX idx_deeds_user_category ON deeds(user_id, category, is_active);
-CREATE INDEX idx_deeds_user_active ON deeds(user_id, is_active) WHERE is_active = true;
+CREATE INDEX idx_deed_user_category ON deed(user_id, category_type);
+CREATE INDEX idx_deed_items_deed ON deed_items(deed_id, is_active);
+CREATE INDEX idx_deed_items_active ON deed_items(deed_id, is_active) WHERE is_active = true;
 
--- Self-referencing deeds (parent-child relationships)
-CREATE INDEX idx_deeds_parent ON deeds(parent_deed_id, is_active);
-CREATE INDEX idx_deeds_user_parent ON deeds(user_id, parent_deed_id, is_active);
-CREATE INDEX idx_deeds_parent_active ON deeds(parent_deed_id, is_active) WHERE parent_deed_id IS NOT NULL AND is_active = true;
+-- Deed items lookups
+CREATE INDEX idx_deed_items_level ON deed_items(deed_id, level, is_active);
+CREATE INDEX idx_deed_items_hide_type ON deed_items(hide_type, is_active);
 
 -- Friend relationships
 CREATE INDEX idx_friend_relationships_requester ON friend_relationships(requester_user_id, status);
@@ -1388,7 +1422,7 @@ The design balances flexibility (deeds, scales, merits/demerits with time-based 
 
 **Next Steps** (Implementation Phase):
 1. Set up PostgreSQL database instance
-2. Create initial schema with all tables and constraints (13 tables total)
+2. Create initial schema with all tables and constraints (12 tables total)
 3. Create database migration scripts
 4. Set up indexing and connection pooling
 5. Configure backup and replication
@@ -1396,8 +1430,8 @@ The design balances flexibility (deeds, scales, merits/demerits with time-based 
 7. Set up monitoring and alerting
 
 **Schema Summary**:
-- **Total Tables**: 13
-- **Core Tables**: `users`, `deeds`, `entries`, `scale_definitions`, `daily_reflection_messages`
+- **Total Tables**: 12
+- **Core Tables**: `users`, `deed`, `deed_items`, `entries`, `scale_definitions`, `daily_reflection_messages`
 - **Social Tables**: `friend_relationships`, `friend_deed_permissions`
 - **Evaluation Tables**: `merits`, `merit_items`, `targets`, `target_items`
 - **Key Features**: 
